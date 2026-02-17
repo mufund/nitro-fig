@@ -2,6 +2,30 @@
 
 Practical guide for investigating and debugging the nitro-fig trading bot in production.
 
+## Replay TUI (Visual Debugging)
+
+The fastest way to debug strategy behavior is the interactive replay TUI. It replays recorded data through the same strategy and risk code used in live trading, with full visualization.
+
+```bash
+# Record market data (5 cycles)
+cargo run --release --bin recorder -- --cycles 5
+
+# Replay a specific market
+cargo run --release --bin replay -- logs/5m/btc-updown-5m-1771320600
+```
+
+**What to look for:**
+- **Signal markers on BTC chart**: DarkGray triangles (up signals) and white triangles (down signals) show when strategies fire. Cyan/red dots show dispatched orders.
+- **Fair value dots on PM charts**: Each strategy's fair value estimate appears as a colored dot. The gap between the dot and the bid/ask lines IS the edge the strategy detected. A large gap means the strategy sees significant mispricing.
+- **Metrics panel**: Watch sigma, z-score, regime, and distance change tick by tick. Useful for understanding why a strategy gate opens or closes.
+- **Signal/order tables**: Scrollable logs show every signal and order with edge, fair value, market price, and strategy name.
+
+**Navigation**: Use `Left`/`Right` to step event by event, `Space` to play/pause, `PgDn`/`PgUp` to jump 100 events, `Home`/`End` for start/end. Press `s` to export all intermediate values to CSV for offline analysis.
+
+See [README.md#replay-tui](README.md#replay-tui) for full keybinding reference.
+
+---
+
 ## Reading Logs
 
 ### SSH and Tail

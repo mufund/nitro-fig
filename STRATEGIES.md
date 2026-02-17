@@ -4,6 +4,8 @@ Six stateless strategies evaluate a shared `MarketState` and produce `Signal` va
 
 Each strategy can be individually enabled/disabled via environment variables (see [Configuration](#configuration) below). Five are active by default; `cross_timeframe` is disabled because no cross-market data feed is wired yet.
 
+All six strategies can be visualized in the [replay TUI](README.md#replay-tui) — fair value dots for each strategy are shown on the Polymarket YES/NO charts, color-coded: LA=yellow, CC=cyan, CF=magenta, CT=blue, SM=red, LP=green.
+
 ## How Polymarket Binary Markets Work
 
 Each market is a 5-minute window: will BTC be **above** (Up) or **below** (Down) the strike price at expiry? You buy Up or Down tokens priced $0.00-$1.00. If correct, the token pays $1.00. If wrong, it pays $0.00.

@@ -140,6 +140,31 @@ Each market produces log output like:
 [ENGINE]   convexity_fade: sig=2652 ord=6 fill=6 pnl=$10.60 avg_edge=0.053
 ```
 
+## Recording & Replay
+
+The recorder captures live market data for offline analysis. The replay TUI visualizes it interactively.
+
+```bash
+# Record on VPS (5 market cycles)
+ssh root@82.24.195.32 "source ~/.cargo/env && \
+  cd /root/nitro-fig && \
+  cargo run --release --bin recorder -- --cycles 5"
+
+# Sync recorded data back to local machine
+rsync -az root@82.24.195.32:/root/nitro-fig/logs/5m/ ./logs/5m/
+
+# Replay locally with TUI
+cargo run --release --bin replay -- logs/5m/btc-updown-5m-1771320600
+```
+
+Each recorded market produces a directory under `logs/{interval}/{slug}/` containing:
+- `binance.csv` — Binance trade stream (timestamp, price, qty, is_buy)
+- `polymarket.csv` — PM best bid/ask for UP and DOWN tokens
+- `book.csv` — PM orderbook depth snapshots
+- `market_info.txt` — slug, start/end timestamps, strike price
+
+The replay TUI is a local-only tool (requires a terminal with color support). It does not need network access.
+
 ## Notes
 
 - **Binance WS geo-blocking**: `stream.binance.com` is blocked from US IPs. The EU VPS works fine.
@@ -148,3 +173,4 @@ Each market produces log output like:
 - **Build on VPS**: Cross-compiling from macOS aarch64 to Linux x86_64 requires a toolchain. Build directly on VPS.
 - **start.sh is server-only**: The rsync excludes `start.sh` to avoid overwriting it. Edit directly on the server.
 - **EWMA persistence**: The bot must stay running across markets for EWMA to accumulate. Restarting resets to cold start (10s warmup).
+- **Replay TUI**: Requires `ratatui`/`crossterm`. Build with `cargo build --release --bin replay`. Only works locally (not over SSH without proper terminal forwarding).

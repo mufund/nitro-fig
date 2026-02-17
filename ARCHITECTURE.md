@@ -136,7 +136,13 @@ src/
 │   └── discovery.rs               # Gamma API: slug + series_id market discovery
 └── bin/
     ├── backtester.rs              # Replay CSVs through library strategies
-    ├── recorder.rs                # Record live market feeds to CSV
+    ├── recorder.rs                # Record live market feeds to CSV (--cycles N)
+    ├── replay/                    # Interactive TUI for recorded data analysis
+    │   ├── main.rs                # Entry point, event loop, keybindings
+    │   ├── types.rs               # CSV row types, ReplayEvent, App struct
+    │   ├── loader.rs              # CSV loading, event merging
+    │   ├── app.rs                 # Core logic: snapshots, navigation, strategy eval
+    │   └── render.rs              # All TUI rendering (charts, orderbook, metrics)
     ├── analyzer.rs                # Post-hoc analysis of recorded data
     └── ws_test.rs                 # WebSocket connectivity test
 ```
@@ -250,11 +256,55 @@ No lock overhead anywhere in the hot path.
 |---|---|---|
 | `bot` | `cargo run --release --bin bot` | Live trading / dry-run |
 | `backtester` | `cargo run --release --bin backtester [dir]` | Replay CSVs through strategies |
-| `recorder` | `cargo run --release --bin recorder` | Record live feeds to CSV |
+| `recorder` | `cargo run --release --bin recorder -- --cycles N` | Record live feeds to CSV |
+| `replay` | `cargo run --release --bin replay -- <data_dir>` | Interactive TUI: charts, orderbook, strategy signals |
 | `analyzer` | `cargo run --release --bin analyzer` | Post-hoc data analysis |
 | `ws_test` | `cargo run --release --bin ws_test` | Test WS connectivity |
 
 All binaries import from the `polymarket_crypto` library crate.
+
+## Replay TUI Architecture
+
+The `replay` binary provides an interactive terminal interface for stepping through recorded market data. It replays events through the same `MarketState`, strategy, and risk code used in live trading.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  loader.rs                                                   │
+│  CSV files → BinanceCsvRow / PmCsvRow / BookSnapshot         │
+│  merge_events() → sorted Vec<ReplayEvent>                    │
+└──────────────────────┬──────────────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│  app.rs                                                      │
+│  App { events, cursor, state: MarketState, snapshots, ... }  │
+│                                                              │
+│  build_snapshots(): clone MarketState every 1000 events      │
+│  step_forward(n): apply events, eval strategies, push charts │
+│  step_back(n): restore nearest snapshot, replay forward      │
+│  export_csv(): write all intermediate values to CSV          │
+│                                                              │
+│  StrategySet: shared strategy instances (LA, CC, CF, SM, LP) │
+│  evaluate_event() + record_signals_and_orders()              │
+└──────────────────────┬──────────────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│  render.rs                                                   │
+│  draw() → layout: header | left(books+metrics) | right(…)   │
+│                                                              │
+│  render_price_chart(): BTC(yellow) + Strike(magenta) +       │
+│    VWAP(cyan) + signal/order markers snapped to price line   │
+│  render_pm_chart(): YES/NO split with bid/ask lines +        │
+│    per-strategy fair value scatter (6 colors)                │
+│  render_volume_sparklines(): buy(green) / sell(red)          │
+│  render_orderbook(): horizontal depth bars                   │
+│  render_metrics(): sigma, z, fair, delta, regime, VWAP, …   │
+│  render_signals() / render_orders(): scrollable tables       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Snapshot-based navigation**: Cloning `MarketState` every 1000 events enables O(1000) backward jumps instead of replaying from the start. Binary search via `partition_point` finds the nearest prior snapshot.
+
+**Signal snap-to-line**: Strategy signals fire on PM events, whose event indices fall between Binance trade indices on the x-axis. A binary search in `price_history` snaps each marker to the nearest BTC price point on the line.
 
 ## Dependencies
 
@@ -266,3 +316,4 @@ Minimal — no `parking_lot`, no locks anywhere:
 - `serde` / `serde_json` — JSON parsing
 - `chrono` — Timestamps
 - `futures-util` — Stream utilities for WS
+- `ratatui` + `crossterm` — Terminal UI framework (replay TUI)
