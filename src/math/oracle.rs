@@ -9,6 +9,7 @@
 /// delta_oracle_s: oracle timestamp uncertainty in seconds.
 ///   Prevents z/d2 from going to infinity as tau → 0.
 ///   Calibrate from historical oracle timestamp jitter. Typical: 1-5s.
+#[derive(Clone)]
 pub struct OracleBasis {
     pub beta: f64,
     pub delta_oracle_s: f64,

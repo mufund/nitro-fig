@@ -11,6 +11,7 @@ use crate::types::{
 };
 
 /// Per-strategy performance counters, accumulated during a single market.
+#[derive(Clone)]
 pub struct StrategyStats {
     pub signals: u32,
     pub orders: u32,
@@ -40,6 +41,7 @@ impl StrategyStats {
 }
 
 /// Sorted orderbook (one side: bids or asks).
+#[derive(Clone)]
 pub struct OrderBook {
     pub bids: Vec<(f64, f64)>,
     pub asks: Vec<(f64, f64)>,
@@ -161,6 +163,7 @@ impl OrderBook {
 }
 
 /// Cross-market state for Edge 4 (cross-timeframe RV).
+#[derive(Clone)]
 pub struct CrossMarketState {
     pub interval: Interval,
     pub up_bid: f64,
@@ -174,6 +177,7 @@ pub struct CrossMarketState {
 /// Persistent Binance-derived state that survives across markets.
 /// Created once at startup, threaded through each market cycle.
 /// Market 1 warms in ~10s. Market 2+ starts instantly.
+#[derive(Clone)]
 pub struct BinanceState {
     pub ewma_vol: SampledEwmaVol,
     pub trade_buffer: VecDeque<BinanceTrade>,
@@ -213,6 +217,7 @@ impl BinanceState {
 }
 
 /// Owned by the engine task — no Arc, no RwLock, no shared references.
+#[derive(Clone)]
 pub struct MarketState {
     pub info: MarketInfo,
     // ── Binance-derived (persistent across markets) ──
@@ -411,6 +416,7 @@ impl MarketState {
     }
 }
 
+#[derive(Clone)]
 pub struct PositionTracker {
     pub side: Option<Side>,
     pub size: f64,

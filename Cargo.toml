@@ -27,6 +27,10 @@ path = "src/bin/ws_test.rs"
 name = "analyzer"
 path = "src/bin/analyzer.rs"
 
+[[bin]]
+name = "replay"
+path = "src/bin/replay/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -35,6 +39,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 futures-util = "0.3"
+ratatui = { version = "0.29", features = ["crossterm"] }
+crossterm = "0.28"
 
 [profile.release]
 opt-level = 3

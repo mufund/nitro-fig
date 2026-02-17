@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 /// Rolling VWAP tracker over a configurable time window.
 /// O(1) amortized per update via incremental sum maintenance.
+#[derive(Clone)]
 pub struct VwapTracker {
     window_ms: i64,
     buffer: VecDeque<(i64, f64, f64)>, // (ts_ms, price, qty)

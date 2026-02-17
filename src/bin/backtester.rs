@@ -1,6 +1,8 @@
 //! Backtester: replays CSV data through the same strategy code used in live trading.
 //! No async needed — runs synchronously on historical data.
 //! Uses the library's strategies and MarketState directly — zero code duplication.
+//!
+//! Supports full orderbook depth via book.csv (optional — degrades gracefully).
 
 use std::time::Instant;
 
@@ -31,30 +33,43 @@ fn main() {
     // Load CSVs
     let binance_trades = load_binance_csv(&format!("{}/binance.csv", data_dir));
     let pm_quotes = load_polymarket_csv(&format!("{}/polymarket.csv", data_dir));
-    let (slug, start_ms, end_ms) = load_market_info(&format!("{}/market_info.txt", data_dir));
+    let book_snapshots = load_book_csv(&format!("{}/book.csv", data_dir));
+    let market_info = load_market_info(&format!("{}/market_info.txt", data_dir));
 
-    eprintln!("Loaded {} Binance trades, {} PM quotes", binance_trades.len(), pm_quotes.len());
-    eprintln!("Market: {} | start={} end={}", slug, start_ms, end_ms);
+    eprintln!(
+        "Loaded {} Binance trades, {} PM quotes, {} book rows",
+        binance_trades.len(),
+        pm_quotes.len(),
+        book_snapshots.len(),
+    );
+    eprintln!(
+        "Market: {} | start={} end={} strike={:.2}",
+        market_info.slug, market_info.start_ms, market_info.end_ms, market_info.strike
+    );
 
     // Merge events chronologically
-    let events = merge_events(&binance_trades, &pm_quotes);
+    let events = merge_events(&binance_trades, &pm_quotes, &book_snapshots);
     eprintln!("Merged {} events", events.len());
 
-    // Strike from first Binance price
-    let strike = binance_trades
-        .first()
-        .map(|t| t.price)
-        .expect("No Binance trades");
-    eprintln!("Strike: ${:.2}", strike);
+    // Strike: prefer market_info, fall back to first Binance price
+    let strike = if market_info.strike > 0.0 {
+        market_info.strike
+    } else {
+        binance_trades
+            .first()
+            .map(|t| t.price)
+            .expect("No Binance trades and no strike in market_info")
+    };
+    eprintln!("Strike: ${:.2}{}", strike, if market_info.strike > 0.0 { " (from market_info)" } else { " (from first Binance trade)" });
 
     // Initialize MarketState with persistent BinanceState
     let oracle = OracleBasis::new(0.0, 2.0); // default oracle params for backtest
     let bs = BinanceState::new(0.94, 10, 0.30, 60_000, 30_000);
     let mut state = MarketState::new(
         MarketInfo {
-            slug: slug.clone(),
-            start_ms,
-            end_ms,
+            slug: market_info.slug.clone(),
+            start_ms: market_info.start_ms,
+            end_ms: market_info.end_ms,
             up_token_id: String::new(),
             down_token_id: String::new(),
             strike,
@@ -116,7 +131,7 @@ fn main() {
                 evaluate_filtered(&binance_strategies, &state, now_ms, &mut signal_buf);
 
                 // MarketOpen strategies in first 15s
-                let elapsed_ms = now_ms - start_ms;
+                let elapsed_ms = now_ms - market_info.start_ms;
                 if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signal_buf.extend(open_buf.drain(..));
@@ -135,13 +150,18 @@ fn main() {
                 }
             }
             Event::Polymarket(q) => {
+                // Filter out book-edge placeholder values (0.01 bid / 0.99 ask).
+                // Each best_bid_ask WS event only updates one token — the other shows
+                // book extremes (0.01/0.99), which are not real quotes.
+                let is_real_bid = |v: f64| v > 0.02;
+                let is_real_ask = |v: f64| v > 0.0 && v < 0.98;
                 state.on_polymarket_quote(PolymarketQuote {
                     server_ts_ms: q.ts_ms,
                     recv_at: fake_instant,
-                    up_bid: if q.up_bid > 0.0 { Some(q.up_bid) } else { None },
-                    up_ask: if q.up_ask > 0.0 { Some(q.up_ask) } else { None },
-                    down_bid: if q.down_bid > 0.0 { Some(q.down_bid) } else { None },
-                    down_ask: if q.down_ask > 0.0 { Some(q.down_ask) } else { None },
+                    up_bid: if is_real_bid(q.up_bid) { Some(q.up_bid) } else { None },
+                    up_ask: if is_real_ask(q.up_ask) { Some(q.up_ask) } else { None },
+                    down_bid: if is_real_bid(q.down_bid) { Some(q.down_bid) } else { None },
+                    down_ask: if is_real_ask(q.down_ask) { Some(q.down_ask) } else { None },
                 });
 
                 if !state.has_data() {
@@ -155,7 +175,43 @@ fn main() {
                 evaluate_filtered(&pm_strategies, &state, now_ms, &mut signal_buf);
 
                 // MarketOpen strategies in first 15s
-                let elapsed_ms = now_ms - start_ms;
+                let elapsed_ms = now_ms - market_info.start_ms;
+                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                    evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
+                    signal_buf.extend(open_buf.drain(..));
+                }
+
+                for sig in &signal_buf {
+                    results.push(BacktestEntry {
+                        strategy: sig.strategy.to_string(),
+                        side: format!("{}", sig.side),
+                        edge: sig.edge,
+                        fair_value: sig.fair_value,
+                        market_price: sig.market_price,
+                        time_left_s: state.time_left_s(now_ms),
+                        is_passive: sig.is_passive,
+                    });
+                }
+            }
+            Event::Book(b) => {
+                state.on_book_update(PolymarketBook {
+                    recv_at: fake_instant,
+                    is_up_token: b.is_up,
+                    bids: b.bids.clone(),
+                    asks: b.asks.clone(),
+                });
+
+                if !state.has_data() {
+                    continue;
+                }
+
+                total_evals += 1;
+                let now_ms = b.ts_ms;
+
+                // Book updates trigger PM strategies (same as live engine)
+                evaluate_filtered(&pm_strategies, &state, now_ms, &mut signal_buf);
+
+                let elapsed_ms = now_ms - market_info.start_ms;
                 if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signal_buf.extend(open_buf.drain(..));
@@ -279,7 +335,15 @@ struct BacktestEntry {
 
 struct BinanceCsvRow { ts_ms: i64, price: f64, qty: f64, is_buy: bool }
 struct PmCsvRow { ts_ms: i64, up_bid: f64, up_ask: f64, down_bid: f64, down_ask: f64 }
-enum Event { Binance(BinanceCsvRow), Polymarket(PmCsvRow) }
+struct BookSnapshot { ts_ms: i64, is_up: bool, bids: Vec<(f64, f64)>, asks: Vec<(f64, f64)> }
+enum Event { Binance(BinanceCsvRow), Polymarket(PmCsvRow), Book(BookSnapshot) }
+
+struct LoadedMarketInfo {
+    slug: String,
+    start_ms: i64,
+    end_ms: i64,
+    strike: f64,
+}
 
 // ─── CSV Loaders ───
 
@@ -322,11 +386,66 @@ fn load_polymarket_csv(path: &str) -> Vec<PmCsvRow> {
     }).collect()
 }
 
-fn load_market_info(path: &str) -> (String, i64, i64) {
+/// Load book.csv — full orderbook depth.
+/// Format: recv_time,recv_ts_ms,token,side,level,price,size
+/// Groups rows by (ts_ms, token) into BookSnapshot structs.
+fn load_book_csv(path: &str) -> Vec<BookSnapshot> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("No book.csv found ({}), proceeding without book depth", e);
+            return vec![];
+        }
+    };
+
+    // Parse all rows, group by (ts_ms, token)
+    let mut grouped: std::collections::BTreeMap<(i64, bool), (Vec<(f64, f64)>, Vec<(f64, f64)>)> =
+        std::collections::BTreeMap::new();
+
+    for line in content.lines().skip(1) {
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 7 { continue; }
+
+        let ts_ms = match f[1].parse::<i64>() {
+            Ok(t) if t > 0 => t,
+            _ => continue,
+        };
+        let is_up = f[2].trim() == "up";
+        let side = f[3].trim();
+        let price: f64 = match f[5].parse() {
+            Ok(p) if p > 0.0 => p,
+            _ => continue,
+        };
+        let size: f64 = match f[6].parse() {
+            Ok(s) if s > 0.0 => s,
+            _ => continue,
+        };
+
+        let entry = grouped.entry((ts_ms, is_up)).or_insert_with(|| (Vec::new(), Vec::new()));
+        match side {
+            "bid" => entry.0.push((price, size)),
+            "ask" => entry.1.push((price, size)),
+            _ => {}
+        }
+    }
+
+    grouped
+        .into_iter()
+        .map(|((ts_ms, is_up), (bids, asks))| BookSnapshot {
+            ts_ms,
+            is_up,
+            bids,
+            asks,
+        })
+        .collect()
+}
+
+fn load_market_info(path: &str) -> LoadedMarketInfo {
     let content = std::fs::read_to_string(path).unwrap_or_default();
     let mut slug = String::new();
     let mut start_ms = 0i64;
     let mut end_ms = 0i64;
+    let mut strike = 0.0_f64;
 
     for line in content.lines() {
         let (key, val) = if let Some(pos) = line.find('=') {
@@ -340,6 +459,7 @@ fn load_market_info(path: &str) -> (String, i64, i64) {
             "slug" => slug = val.to_string(),
             "start_ms" => start_ms = val.parse().unwrap_or(0),
             "end_ms" => end_ms = val.parse().unwrap_or(0),
+            "strike" => strike = val.parse().unwrap_or(0.0),
             "start" | "start_date" => {
                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(val) {
                     if start_ms == 0 { start_ms = dt.timestamp_millis(); }
@@ -354,22 +474,48 @@ fn load_market_info(path: &str) -> (String, i64, i64) {
         }
     }
     if slug.is_empty() { slug = "unknown".to_string(); }
-    (slug, start_ms, end_ms)
+    LoadedMarketInfo { slug, start_ms, end_ms, strike }
 }
 
-fn merge_events(binance: &[BinanceCsvRow], pm: &[PmCsvRow]) -> Vec<Event> {
-    let mut events: Vec<(i64, Event)> = Vec::with_capacity(binance.len() + pm.len());
-    for b in binance {
-        events.push((b.ts_ms, Event::Binance(BinanceCsvRow {
-            ts_ms: b.ts_ms, price: b.price, qty: b.qty, is_buy: b.is_buy,
-        })));
+fn merge_events(binance: &[BinanceCsvRow], pm: &[PmCsvRow], books: &[BookSnapshot]) -> Vec<Event> {
+    let mut events: Vec<(i64, u8, usize)> = Vec::with_capacity(binance.len() + pm.len() + books.len());
+
+    for (i, b) in binance.iter().enumerate() {
+        events.push((b.ts_ms, 0, i));
     }
-    for p in pm {
-        events.push((p.ts_ms, Event::Polymarket(PmCsvRow {
-            ts_ms: p.ts_ms, up_bid: p.up_bid, up_ask: p.up_ask,
-            down_bid: p.down_bid, down_ask: p.down_ask,
-        })));
+    for (i, p) in pm.iter().enumerate() {
+        events.push((p.ts_ms, 1, i));
     }
-    events.sort_by_key(|(ts, _)| *ts);
-    events.into_iter().map(|(_, e)| e).collect()
+    for (i, b) in books.iter().enumerate() {
+        events.push((b.ts_ms, 2, i));
+    }
+
+    // Sort by timestamp, with books before quotes at same timestamp
+    // (so book depth is populated before strategies evaluate on quote)
+    events.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    events.into_iter().map(|(_, typ, idx)| {
+        match typ {
+            0 => {
+                let b = &binance[idx];
+                Event::Binance(BinanceCsvRow {
+                    ts_ms: b.ts_ms, price: b.price, qty: b.qty, is_buy: b.is_buy,
+                })
+            }
+            1 => {
+                let p = &pm[idx];
+                Event::Polymarket(PmCsvRow {
+                    ts_ms: p.ts_ms, up_bid: p.up_bid, up_ask: p.up_ask,
+                    down_bid: p.down_bid, down_ask: p.down_ask,
+                })
+            }
+            _ => {
+                let b = &books[idx];
+                Event::Book(BookSnapshot {
+                    ts_ms: b.ts_ms, is_up: b.is_up,
+                    bids: b.bids.clone(), asks: b.asks.clone(),
+                })
+            }
+        }
+    }).collect()
 }

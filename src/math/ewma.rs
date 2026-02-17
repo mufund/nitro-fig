@@ -62,6 +62,7 @@ impl EwmaVol {
 /// Instead of updating on every tick (~100/s, mostly identical prices),
 /// samples once per second, computing log-returns between samples.
 /// sigma is directly in per-second units — no trades_per_sec conversion needed.
+#[derive(Clone)]
 pub struct SampledEwmaVol {
     lambda: f64,
     sigma_sq: f64,

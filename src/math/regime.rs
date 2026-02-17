@@ -12,6 +12,7 @@ pub enum Regime {
 ///   Range: < 60% same direction
 ///   Trend: >= 75% same direction
 ///   Ambiguous: 60-75%
+#[derive(Clone)]
 pub struct RegimeClassifier {
     window_ms: i64,
     ticks: VecDeque<(i64, bool)>, // (ts_ms, is_up_tick)
