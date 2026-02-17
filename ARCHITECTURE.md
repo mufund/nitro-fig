@@ -113,7 +113,9 @@ src/
 │   ├── convexity_fade.rs          # S3: ATM gamma/convexity mean-reversion
 │   ├── strike_misalign.rs         # S4: VWAP vs strike bias in first 15s
 │   ├── lp_extreme.rs              # S5: Passive LP on losing side (tail risk)
-│   └── cross_timeframe.rs         # S6: Vol surface RV (disabled — no feed)
+│   ├── cross_timeframe.rs         # S6: Vol surface RV (disabled — no feed)
+│   ├── test_helpers.rs            # Shared test fixtures (make_state, inject_book, etc.)
+│   └── bench_latency.rs           # Per-strategy evaluation latency benchmarks
 ├── math/
 │   ├── mod.rs
 │   ├── normal.rs                  # phi(x), Phi(x) — standard normal PDF/CDF
@@ -158,11 +160,19 @@ Markets auto-cycle indefinitely. The Binance WebSocket is never disconnected.
 
 ## Core Engine
 
-`engine/runner.rs` processes events sequentially in a single async task:
+`engine/runner.rs` processes events sequentially in a single async task.
+
+**Strategy instantiation**: Strategies are conditionally loaded based on `Config` toggles (env vars `STRAT_*`). At startup, the engine builds three trigger-partitioned vectors, only including enabled strategies:
+
+```rust
+binance_strategies:  [latency_arb, lp_extreme]         // if enabled in config
+pm_strategies:       [certainty_capture, convexity_fade, lp_extreme]
+open_strategies:     [strike_misalign]
+```
 
 **Strategy evaluation triggers:**
-- `BinanceTrade` → evaluates `[latency_arb, lp_extreme]` + `[strike_misalign]` if in first 15s
-- `PolymarketQuote` / `PolymarketBook` → evaluates `[certainty_capture, convexity_fade, lp_extreme]` + `[strike_misalign]` if in first 15s
+- `BinanceTrade` → evaluates `binance_strategies` + `open_strategies` if in first 15s
+- `PolymarketQuote` / `PolymarketBook` → evaluates `pm_strategies` + `open_strategies` if in first 15s
 - `OrderAck` → records fill, updates position
 - `Tick` → stale data detection (5s threshold)
 

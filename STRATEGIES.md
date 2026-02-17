@@ -1,8 +1,8 @@
 # Strategies
 
-Five stateless strategies evaluate a shared `MarketState` and produce `Signal` values. Each implements `Strategy::evaluate(&MarketState, now_ms) -> Option<Signal>`. All passing signals are dispatched through the risk manager simultaneously (no "best signal wins" — every signal that clears risk gets an order).
+Six stateless strategies evaluate a shared `MarketState` and produce `Signal` values. Each implements `Strategy::evaluate(&MarketState, now_ms) -> Option<Signal>`. All passing signals are dispatched through the risk manager simultaneously (no "best signal wins" — every signal that clears risk gets an order).
 
-A sixth strategy (`cross_timeframe`) exists in code but is disabled because no cross-market data feed is wired yet.
+Each strategy can be individually enabled/disabled via environment variables (see [Configuration](#configuration) below). Five are active by default; `cross_timeframe` is disabled because no cross-market data feed is wired yet.
 
 ## How Polymarket Binary Markets Work
 
@@ -360,7 +360,7 @@ This confluence happens perhaps a few times per hour. The strategy compensates w
 ## S6: Cross-Timeframe Relative Value (Disabled)
 
 **File**: `strategies/cross_timeframe.rs`
-**Status**: Code exists but removed from evaluation in `runner.rs`. No cross-market data feed is wired.
+**Status**: Code exists but disabled by default (`STRAT_CROSS_TF=false`). No cross-market data feed is wired.
 
 ### Concept (Planned)
 
@@ -369,6 +369,30 @@ Extract implied volatility from multiple expiry windows (5m, 15m, 1h). Fit a vol
 ### Why Disabled
 
 `state.cross_markets` is always empty because no feed connects to markets at other intervals. The strategy self-disables when fewer than 2 cross-market data points are available. Implementing this requires subscribing to Polymarket CLOB feeds for multiple token pairs simultaneously.
+
+---
+
+## Configuration
+
+Each strategy can be individually enabled or disabled via environment variables. The engine conditionally instantiates strategies at startup based on these toggles and logs which are active.
+
+| Env Var | Strategy | Default | Disable with |
+|---------|----------|---------|-------------|
+| `STRAT_LATENCY_ARB` | S1: Latency Arbitrage | **enabled** | `STRAT_LATENCY_ARB=0` |
+| `STRAT_CERTAINTY_CAPTURE` | S2: Certainty Capture | **enabled** | `STRAT_CERTAINTY_CAPTURE=false` |
+| `STRAT_CONVEXITY_FADE` | S3: Convexity Fade | **enabled** | `STRAT_CONVEXITY_FADE=0` |
+| `STRAT_STRIKE_MISALIGN` | S4: Strike Misalignment | **enabled** | `STRAT_STRIKE_MISALIGN=false` |
+| `STRAT_LP_EXTREME` | S5: Extreme Probability LP | **enabled** | `STRAT_LP_EXTREME=0` |
+| `STRAT_CROSS_TF` | S6: Cross-Timeframe RV | **disabled** | (enable: `STRAT_CROSS_TF=1`) |
+
+**Active strategies** (S1-S5) default to `true`. Set the env var to `"0"` or `"false"` to disable.
+
+**Cross-timeframe** (S6) defaults to `false`. Set to `"1"` or `"true"` to enable (requires cross-market data feed).
+
+At startup, the engine logs which strategies are active:
+```
+[ENGINE] Strategies enabled: ["latency_arb", "certainty_capture", "convexity_fade", "strike_misalign", "lp_extreme"]
+```
 
 ---
 

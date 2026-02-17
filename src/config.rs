@@ -84,8 +84,13 @@ pub struct Config {
     /// Prevents the model from becoming overconfident during low-vol periods.
     pub sigma_floor_annual: f64,
 
-    // Cross-timeframe (Edge 4)
-    pub cross_timeframe_enabled: bool,
+    // Strategy toggles — set to false to disable individual strategies
+    pub strategy_latency_arb: bool,
+    pub strategy_certainty_capture: bool,
+    pub strategy_convexity_fade: bool,
+    pub strategy_strike_misalign: bool,
+    pub strategy_lp_extreme: bool,
+    pub strategy_cross_timeframe: bool,
 
     // Mode
     pub dry_run: bool,
@@ -167,7 +172,22 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.30),
-            cross_timeframe_enabled: std::env::var("CROSS_TF")
+            strategy_latency_arb: std::env::var("STRAT_LATENCY_ARB")
+                .map(|v| v != "0" && v.to_lowercase() != "false")
+                .unwrap_or(true),
+            strategy_certainty_capture: std::env::var("STRAT_CERTAINTY_CAPTURE")
+                .map(|v| v != "0" && v.to_lowercase() != "false")
+                .unwrap_or(true),
+            strategy_convexity_fade: std::env::var("STRAT_CONVEXITY_FADE")
+                .map(|v| v != "0" && v.to_lowercase() != "false")
+                .unwrap_or(true),
+            strategy_strike_misalign: std::env::var("STRAT_STRIKE_MISALIGN")
+                .map(|v| v != "0" && v.to_lowercase() != "false")
+                .unwrap_or(true),
+            strategy_lp_extreme: std::env::var("STRAT_LP_EXTREME")
+                .map(|v| v != "0" && v.to_lowercase() != "false")
+                .unwrap_or(true),
+            strategy_cross_timeframe: std::env::var("STRAT_CROSS_TF")
                 .map(|v| v == "1" || v.to_lowercase() == "true")
                 .unwrap_or(false),
             dry_run: std::env::var("DRY_RUN")
@@ -202,5 +222,80 @@ fn default_series_id(asset: &str, interval: &Interval) -> &'static str {
         ("sol", Interval::M15) => "10423",
         ("xrp", Interval::M15) => "10422",
         _ => "10684",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: make_config() helper creates a Config with all 5 active strategies enabled.
+    /// Expected: All active strategies default to true, cross_timeframe to false.
+    #[test]
+    fn test_strategy_toggles_default_true() {
+        let config = crate::strategies::test_helpers::make_config();
+        assert!(config.strategy_latency_arb, "latency_arb should default to enabled");
+        assert!(config.strategy_certainty_capture, "certainty_capture should default to enabled");
+        assert!(config.strategy_convexity_fade, "convexity_fade should default to enabled");
+        assert!(config.strategy_strike_misalign, "strike_misalign should default to enabled");
+        assert!(config.strategy_lp_extreme, "lp_extreme should default to enabled");
+    }
+
+    /// Scenario: cross_timeframe is disabled by default since no cross-market feed exists.
+    /// Expected: strategy_cross_timeframe is false in the default config.
+    #[test]
+    fn test_cross_timeframe_default_false() {
+        let config = crate::strategies::test_helpers::make_config();
+        assert!(!config.strategy_cross_timeframe, "cross_timeframe should default to disabled");
+    }
+
+    /// Scenario: A strategy toggle can be set to false to disable it.
+    /// Expected: Only the disabled strategy is off, others remain enabled.
+    #[test]
+    fn test_disable_single_strategy() {
+        let mut config = crate::strategies::test_helpers::make_config();
+        config.strategy_latency_arb = false;
+        assert!(!config.strategy_latency_arb, "latency_arb should be disabled");
+        assert!(config.strategy_certainty_capture, "other strategies should stay enabled");
+        assert!(config.strategy_convexity_fade, "other strategies should stay enabled");
+    }
+
+    /// Scenario: cross_timeframe toggle set to true to enable the disabled strategy.
+    /// Expected: strategy_cross_timeframe becomes true.
+    #[test]
+    fn test_enable_cross_timeframe() {
+        let mut config = crate::strategies::test_helpers::make_config();
+        config.strategy_cross_timeframe = true;
+        assert!(config.strategy_cross_timeframe, "cross_timeframe should be enabled when set to true");
+    }
+
+    /// Scenario: Interval parsing with known and unknown interval strings.
+    /// Expected: Known strings map correctly, unknown falls back to M5.
+    #[test]
+    fn test_interval_from_str() {
+        assert_eq!(Interval::from_str("5m"), Interval::M5);
+        assert_eq!(Interval::from_str("15m"), Interval::M15);
+        assert_eq!(Interval::from_str("1h"), Interval::H1);
+        assert_eq!(Interval::from_str("4h"), Interval::H4);
+        assert_eq!(Interval::from_str("unknown"), Interval::M5);
+    }
+
+    /// Scenario: Each interval has correct window duration in seconds and milliseconds.
+    /// Expected: M5=300s, M15=900s, H1=3600s, H4=14400s (and ms = s * 1000).
+    #[test]
+    fn test_interval_window_durations() {
+        assert_eq!(Interval::M5.window_secs(), 300);
+        assert_eq!(Interval::M5.window_ms(), 300_000);
+        assert_eq!(Interval::H4.window_secs(), 14400);
+        assert_eq!(Interval::H4.window_ms(), 14_400_000);
+    }
+
+    /// Scenario: Known asset+interval combos return specific series IDs.
+    /// Expected: btc/5m → "10684", eth/15m → "10191", unknown → "10684" fallback.
+    #[test]
+    fn test_default_series_id() {
+        assert_eq!(default_series_id("btc", &Interval::M5), "10684");
+        assert_eq!(default_series_id("eth", &Interval::M15), "10191");
+        assert_eq!(default_series_id("doge", &Interval::M5), "10684");
     }
 }

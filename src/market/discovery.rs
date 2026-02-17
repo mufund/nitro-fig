@@ -334,3 +334,367 @@ fn parse_datetime_ms(s: &str) -> Option<i64> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_datetime_ms tests ──
+
+    /// Scenario: parse_datetime_ms receives a standard RFC3339 date string with Z suffix
+    /// Expected: returns the correct millisecond timestamp (seconds * 1000)
+    #[test]
+    fn test_parse_datetime_rfc3339() {
+        let ms = parse_datetime_ms("2024-01-15T12:00:00Z").unwrap();
+        // 2024-01-15 12:00:00 UTC = 1705320000 seconds
+        assert_eq!(ms, 1705320000 * 1000);
+    }
+
+    /// Scenario: parse_datetime_ms receives an RFC3339 date with explicit +00:00 offset
+    /// Expected: returns the same timestamp as the Z suffix variant
+    #[test]
+    fn test_parse_datetime_rfc3339_with_offset() {
+        let ms = parse_datetime_ms("2024-01-15T12:00:00+00:00").unwrap();
+        assert_eq!(ms, 1705320000 * 1000);
+    }
+
+    /// Scenario: parse_datetime_ms receives a numeric string representing Unix seconds
+    /// Expected: detects the value is in seconds (< 1 trillion) and converts to milliseconds
+    #[test]
+    fn test_parse_datetime_unix_seconds() {
+        let ms = parse_datetime_ms("1700000000").unwrap();
+        assert_eq!(ms, 1700000000 * 1000);
+    }
+
+    /// Scenario: parse_datetime_ms receives a numeric string representing Unix milliseconds
+    /// Expected: detects the value is already in milliseconds (>= 1 trillion) and returns it as-is
+    #[test]
+    fn test_parse_datetime_unix_millis() {
+        let ms = parse_datetime_ms("1700000000000").unwrap();
+        assert_eq!(ms, 1700000000000);
+    }
+
+    /// Scenario: parse_datetime_ms receives a non-date, non-numeric string
+    /// Expected: returns None because no parsing strategy can handle it
+    #[test]
+    fn test_parse_datetime_invalid() {
+        assert!(parse_datetime_ms("not-a-date").is_none());
+    }
+
+    // ── extract_token_ids tests ──
+
+    /// Scenario: two separate market objects with groupItemTitle "Up"/"Down" and JSON array clobTokenIds
+    /// Expected: extracts the correct Up and Down token IDs from the multi-market format
+    #[test]
+    fn test_extract_token_ids_two_market_format() {
+        let markets: Vec<serde_json::Value> = serde_json::from_str(r#"[
+            {"groupItemTitle": "Up", "clobTokenIds": "[\"up-tok-123\"]"},
+            {"groupItemTitle": "Down", "clobTokenIds": "[\"down-tok-456\"]"}
+        ]"#).unwrap();
+        let (up, down) = extract_token_ids(&markets);
+        assert_eq!(up, "up-tok-123");
+        assert_eq!(down, "down-tok-456");
+    }
+
+    /// Scenario: single market object with outcomes and clobTokenIds as JSON array strings
+    /// Expected: parses paired outcomes/tokens arrays and maps Up/Down to correct token IDs
+    #[test]
+    fn test_extract_token_ids_single_market_format() {
+        let markets: Vec<serde_json::Value> = serde_json::from_str(r#"[
+            {
+                "outcomes": "[\"Up\",\"Down\"]",
+                "clobTokenIds": "[\"token-up\",\"token-down\"]"
+            }
+        ]"#).unwrap();
+        let (up, down) = extract_token_ids(&markets);
+        assert_eq!(up, "token-up");
+        assert_eq!(down, "token-down");
+    }
+
+    /// Scenario: clobTokenIds is a JSON array encoded as a string (e.g. "[\"tok1\",\"tok2\"]")
+    /// Expected: deserializes the string and returns the first token ID
+    #[test]
+    fn test_extract_first_token_id_json_array_string() {
+        let market: serde_json::Value = serde_json::from_str(
+            r#"{"clobTokenIds": "[\"tok1\",\"tok2\"]"}"#
+        ).unwrap();
+        assert_eq!(extract_first_token_id(&market), "tok1");
+    }
+
+    /// Scenario: clobTokenIds is a plain string value (not a JSON array)
+    /// Expected: returns the raw string as the token ID
+    #[test]
+    fn test_extract_first_token_id_plain_string() {
+        let market: serde_json::Value = serde_json::from_str(
+            r#"{"clobTokenIds": "plain-token-id"}"#
+        ).unwrap();
+        assert_eq!(extract_first_token_id(&market), "plain-token-id");
+    }
+
+    /// Scenario: clobTokenIds is a native JSON array (not a string-encoded array)
+    /// Expected: reads the first element from the array directly
+    #[test]
+    fn test_extract_first_token_id_json_array() {
+        let market: serde_json::Value = serde_json::from_str(
+            r#"{"clobTokenIds": ["arr-tok1", "arr-tok2"]}"#
+        ).unwrap();
+        assert_eq!(extract_first_token_id(&market), "arr-tok1");
+    }
+
+    /// Scenario: market object has no clobTokenIds field at all
+    /// Expected: returns an empty string since there is no token to extract
+    #[test]
+    fn test_extract_first_token_id_missing() {
+        let market: serde_json::Value = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(extract_first_token_id(&market), "");
+    }
+
+    // ── parse_event_to_market_info tests ──
+
+    /// Scenario: valid event with endDate, two Up/Down markets, and a slug containing a Unix timestamp
+    /// Expected: returns a MarketInfo with correct slug, start_ms from slug, end_ms from endDate, and token IDs
+    #[test]
+    fn test_parse_event_happy_path() {
+        let event: serde_json::Value = serde_json::from_str(r#"{
+            "endDate": "2024-01-15T12:05:00Z",
+            "markets": [
+                {"groupItemTitle": "Up", "clobTokenIds": "[\"up-abc\"]"},
+                {"groupItemTitle": "Down", "clobTokenIds": "[\"down-xyz\"]"}
+            ]
+        }"#).unwrap();
+        let slug = "btc-updown-5m-1705320000";
+        let result = parse_event_to_market_info(&event, slug, 300_000).unwrap();
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.slug, slug);
+        assert_eq!(info.start_ms, 1705320000 * 1000);
+        assert_eq!(info.up_token_id, "up-abc");
+        assert_eq!(info.down_token_id, "down-xyz");
+    }
+
+    /// Scenario: event has a valid endDate but an empty markets array
+    /// Expected: returns None because there are no markets to extract tokens from
+    #[test]
+    fn test_parse_event_no_markets() {
+        let event: serde_json::Value = serde_json::from_str(r#"{
+            "endDate": "2024-01-15T12:05:00Z",
+            "markets": []
+        }"#).unwrap();
+        let result = parse_event_to_market_info(&event, "slug-123", 300_000).unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── parse_datetime_ms edge cases ──
+
+    /// Scenario: parse_datetime_ms receives an RFC3339 date with fractional seconds (.500)
+    /// Expected: preserves sub-second precision, returning base timestamp plus 500ms
+    #[test]
+    fn test_parse_datetime_fractional_seconds() {
+        let ms = parse_datetime_ms("2024-01-15T12:00:00.500Z").unwrap();
+        assert_eq!(ms, 1705320000 * 1000 + 500);
+    }
+
+    /// Scenario: parse_datetime_ms receives an empty string
+    /// Expected: returns None because no format can match an empty input
+    #[test]
+    fn test_parse_datetime_empty_string() {
+        assert!(parse_datetime_ms("").is_none());
+    }
+
+    /// Scenario: parse_datetime_ms receives an RFC3339 date with a negative UTC offset (-05:00)
+    /// Expected: correctly converts to UTC, producing the same timestamp as the equivalent Z time
+    #[test]
+    fn test_parse_datetime_negative_timezone() {
+        let ms = parse_datetime_ms("2024-01-15T07:00:00-05:00").unwrap();
+        // 7am EST = 12:00 UTC = 1705320000
+        assert_eq!(ms, 1705320000 * 1000);
+    }
+
+    /// Scenario: parse_datetime_ms receives a small Unix seconds value (year 2001)
+    /// Expected: still treated as seconds (< 1 trillion threshold) and multiplied by 1000
+    #[test]
+    fn test_parse_datetime_small_unix_seconds() {
+        // Small unix timestamp (year 2001)
+        let ms = parse_datetime_ms("1000000000").unwrap();
+        assert_eq!(ms, 1000000000 * 1000);
+    }
+
+    // ── extract_token_ids edge cases ──
+
+    /// Scenario: two-market format with Down listed before Up in the array
+    /// Expected: matches by keyword regardless of array order, assigning tokens correctly
+    #[test]
+    fn test_extract_token_ids_reversed_order() {
+        // Down market listed before Up — should still parse correctly
+        let markets: Vec<serde_json::Value> = serde_json::from_str(r#"[
+            {"groupItemTitle": "Down", "clobTokenIds": "[\"down-first\"]"},
+            {"groupItemTitle": "Up", "clobTokenIds": "[\"up-second\"]"}
+        ]"#).unwrap();
+        let (up, down) = extract_token_ids(&markets);
+        assert_eq!(up, "up-second");
+        assert_eq!(down, "down-first");
+    }
+
+    /// Scenario: markets use "Higher"/"Lower" as groupItemTitle instead of "Up"/"Down"
+    /// Expected: keyword matching recognizes "higher" as Up and "lower" as Down
+    #[test]
+    fn test_extract_token_ids_higher_lower_keywords() {
+        let markets: Vec<serde_json::Value> = serde_json::from_str(r#"[
+            {"groupItemTitle": "Higher", "clobTokenIds": "[\"higher-tok\"]"},
+            {"groupItemTitle": "Lower", "clobTokenIds": "[\"lower-tok\"]"}
+        ]"#).unwrap();
+        let (up, down) = extract_token_ids(&markets);
+        assert_eq!(up, "higher-tok");
+        assert_eq!(down, "lower-tok");
+    }
+
+    /// Scenario: markets use "Yes"/"No" as groupItemTitle instead of "Up"/"Down"
+    /// Expected: keyword matching recognizes "yes" as Up and "no" as Down
+    #[test]
+    fn test_extract_token_ids_yes_no_keywords() {
+        let markets: Vec<serde_json::Value> = serde_json::from_str(r#"[
+            {"groupItemTitle": "Yes", "clobTokenIds": "[\"yes-tok\"]"},
+            {"groupItemTitle": "No", "clobTokenIds": "[\"no-tok\"]"}
+        ]"#).unwrap();
+        let (up, down) = extract_token_ids(&markets);
+        assert_eq!(up, "yes-tok");
+        assert_eq!(down, "no-tok");
+    }
+
+    /// Scenario: two markets with groupItemTitles that don't match any known keyword (Up/Down/Yes/No/Higher/Lower)
+    /// Expected: both Up and Down tokens remain empty since no outcome is recognized
+    #[test]
+    fn test_extract_token_ids_unrecognized_outcomes() {
+        let markets: Vec<serde_json::Value> = serde_json::from_str(r#"[
+            {"groupItemTitle": "Foo", "clobTokenIds": "[\"tok-a\"]"},
+            {"groupItemTitle": "Bar", "clobTokenIds": "[\"tok-b\"]"}
+        ]"#).unwrap();
+        let (up, down) = extract_token_ids(&markets);
+        assert_eq!(up, "", "Unrecognized outcome should not match");
+        assert_eq!(down, "", "Unrecognized outcome should not match");
+    }
+
+    /// Scenario: single-market format with outcomes/clobTokenIds arrays where Down appears before Up
+    /// Expected: zipped iteration maps each outcome to its paired token regardless of order
+    #[test]
+    fn test_extract_token_ids_single_market_reversed() {
+        let markets: Vec<serde_json::Value> = serde_json::from_str(r#"[
+            {
+                "outcomes": "[\"Down\",\"Up\"]",
+                "clobTokenIds": "[\"down-tok\",\"up-tok\"]"
+            }
+        ]"#).unwrap();
+        let (up, down) = extract_token_ids(&markets);
+        assert_eq!(up, "up-tok");
+        assert_eq!(down, "down-tok");
+    }
+
+    // ── extract_first_token_id edge cases ──
+
+    /// Scenario: clobTokenIds is a string-encoded empty JSON array ("[]")
+    /// Expected: deserializes to an empty Vec, so returns empty string
+    #[test]
+    fn test_extract_first_token_id_empty_array_string() {
+        let market: serde_json::Value = serde_json::from_str(
+            r#"{"clobTokenIds": "[]"}"#
+        ).unwrap();
+        assert_eq!(extract_first_token_id(&market), "");
+    }
+
+    /// Scenario: clobTokenIds is a native JSON empty array ([])
+    /// Expected: array has no first element, so returns empty string
+    #[test]
+    fn test_extract_first_token_id_empty_native_array() {
+        let market: serde_json::Value = serde_json::from_str(
+            r#"{"clobTokenIds": []}"#
+        ).unwrap();
+        assert_eq!(extract_first_token_id(&market), "");
+    }
+
+    // ── parse_event_to_market_info edge cases ──
+
+    /// Scenario: human-readable slug (1h market format) with no Unix timestamp suffix
+    /// Expected: falls back to computing start_ms as endDate minus window_ms
+    #[test]
+    fn test_parse_event_slug_without_unix_suffix() {
+        // Human-readable slug (1h format) — no unix timestamp at end
+        // Should fall back to endDate - window_ms for start_ms
+        let event: serde_json::Value = serde_json::from_str(r#"{
+            "endDate": "2024-01-15T13:00:00Z",
+            "markets": [
+                {"groupItemTitle": "Up", "clobTokenIds": "[\"up-tok\"]"},
+                {"groupItemTitle": "Down", "clobTokenIds": "[\"down-tok\"]"}
+            ]
+        }"#).unwrap();
+        let slug = "bitcoin-up-or-down-january-15-12pm-et";
+        let result = parse_event_to_market_info(&event, slug, 3_600_000).unwrap();
+        assert!(result.is_some(), "Should fall back to endDate - window for start");
+        let info = result.unwrap();
+        // end_ms = 2024-01-15 13:00 UTC = 1705323600000
+        // start_ms = end_ms - 3_600_000 = 1705320000000
+        assert_eq!(info.end_ms, 1705323600 * 1000);
+        assert_eq!(info.start_ms, 1705323600 * 1000 - 3_600_000);
+    }
+
+    /// Scenario: event JSON has markets but no endDate field
+    /// Expected: returns None because end_ms resolves to 0, making the market invalid
+    #[test]
+    fn test_parse_event_missing_end_date() {
+        let event: serde_json::Value = serde_json::from_str(r#"{
+            "markets": [
+                {"groupItemTitle": "Up", "clobTokenIds": "[\"up-tok\"]"},
+                {"groupItemTitle": "Down", "clobTokenIds": "[\"down-tok\"]"}
+            ]
+        }"#).unwrap();
+        let result = parse_event_to_market_info(&event, "slug-1705320000", 300_000).unwrap();
+        // end_ms = 0 (missing endDate) → returns None
+        assert!(result.is_none(), "Missing endDate should return None");
+    }
+
+    /// Scenario: event has endDate and markets with groupItemTitles but no clobTokenIds
+    /// Expected: returns None because both Up and Down token IDs are empty
+    #[test]
+    fn test_parse_event_missing_tokens() {
+        // Markets present but no clobTokenIds → both empty → returns None
+        let event: serde_json::Value = serde_json::from_str(r#"{
+            "endDate": "2024-01-15T12:05:00Z",
+            "markets": [
+                {"groupItemTitle": "Up"},
+                {"groupItemTitle": "Down"}
+            ]
+        }"#).unwrap();
+        let result = parse_event_to_market_info(&event, "slug-1705320000", 300_000).unwrap();
+        assert!(result.is_none(), "Missing tokens should return None");
+    }
+
+    /// Scenario: slug ends with a millisecond timestamp instead of the usual seconds timestamp
+    /// Expected: detects value > 1 trillion and treats it as milliseconds without multiplying
+    #[test]
+    fn test_parse_event_millis_in_slug() {
+        // Slug ends with millisecond timestamp instead of seconds
+        let event: serde_json::Value = serde_json::from_str(r#"{
+            "endDate": "2024-01-15T12:05:00Z",
+            "markets": [
+                {"groupItemTitle": "Up", "clobTokenIds": "[\"up-abc\"]"},
+                {"groupItemTitle": "Down", "clobTokenIds": "[\"down-xyz\"]"}
+            ]
+        }"#).unwrap();
+        let slug = "btc-updown-5m-1705320000000"; // millis
+        let result = parse_event_to_market_info(&event, slug, 300_000).unwrap();
+        assert!(result.is_some());
+        let info = result.unwrap();
+        // > 1_000_000_000_000 → treated as millis already
+        assert_eq!(info.start_ms, 1705320000000);
+    }
+
+    /// Scenario: event JSON has an endDate but no "markets" key at all
+    /// Expected: returns None because there are no markets to parse
+    #[test]
+    fn test_parse_event_no_markets_key() {
+        let event: serde_json::Value = serde_json::from_str(r#"{
+            "endDate": "2024-01-15T12:05:00Z"
+        }"#).unwrap();
+        let result = parse_event_to_market_info(&event, "slug-1705320000", 300_000).unwrap();
+        assert!(result.is_none(), "Missing markets key should return None");
+    }
+}

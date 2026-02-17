@@ -32,22 +32,30 @@ pub fn cdf(x: f64) -> f64 {
 mod tests {
     use super::*;
 
+    /// Scenario: Standard normal PDF evaluated at x=0 (the peak of the bell curve).
+    /// Expected: Returns 1/sqrt(2*pi) ≈ 0.3989, the maximum value of phi(x), to within 1e-12.
     #[test]
     fn test_phi_zero() {
         let v = phi(0.0);
         assert!((v - 0.398_942_280_401_432_7).abs() < 1e-12);
     }
 
+    /// Scenario: Standard normal PDF evaluated at x=1 and x=-1.
+    /// Expected: phi(1) == phi(-1) since the standard normal PDF is symmetric about zero.
     #[test]
     fn test_phi_symmetry() {
         assert!((phi(1.0) - phi(-1.0)).abs() < 1e-15);
     }
 
+    /// Scenario: Standard normal CDF evaluated at x=0.
+    /// Expected: Returns 0.5 (half the distribution lies below the mean) to within 1e-7.
     #[test]
     fn test_cdf_zero() {
         assert!((cdf(0.0) - 0.5).abs() < 1e-7);
     }
 
+    /// Scenario: CDF evaluated at well-known z-scores: +/-1.96, +/-1.0, and 3.0.
+    /// Expected: Matches standard normal table values (e.g., Phi(1.96) ≈ 0.975, Phi(1.0) ≈ 0.8413) to within 1e-5.
     #[test]
     fn test_cdf_known_values() {
         // Phi(1.96) ≈ 0.97500
@@ -62,6 +70,8 @@ mod tests {
         assert!((cdf(3.0) - 0.998_650_1).abs() < 1e-5);
     }
 
+    /// Scenario: CDF evaluated at pairs of +x and -x for x in {0.5, 1.0, 1.5, 2.0, 2.5, 3.0}.
+    /// Expected: Phi(x) + Phi(-x) == 1.0 for all x, confirming the reflection symmetry identity.
     #[test]
     fn test_cdf_symmetry() {
         for &x in &[0.5, 1.0, 1.5, 2.0, 2.5, 3.0] {
@@ -69,6 +79,8 @@ mod tests {
         }
     }
 
+    /// Scenario: CDF evaluated at extreme values x=10 and x=-10 (far into the tails).
+    /// Expected: Phi(10) > 0.999999 and Phi(-10) < 1e-6, confirming correct tail behavior.
     #[test]
     fn test_cdf_extremes() {
         assert!(cdf(10.0) > 0.999_999);

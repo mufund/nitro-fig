@@ -34,6 +34,12 @@
 | `BINANCE_WS` | auto-derived | Binance trade stream URL |
 | `TELEGRAM_BOT_TOKEN` | _(empty)_ | Telegram Bot API token |
 | `TELEGRAM_CHAT_ID` | _(empty)_ | Telegram chat ID for alerts |
+| `STRAT_LATENCY_ARB` | `true` | Enable/disable latency arbitrage strategy |
+| `STRAT_CERTAINTY_CAPTURE` | `true` | Enable/disable certainty capture strategy |
+| `STRAT_CONVEXITY_FADE` | `true` | Enable/disable convexity fade strategy |
+| `STRAT_STRIKE_MISALIGN` | `true` | Enable/disable strike misalignment strategy |
+| `STRAT_LP_EXTREME` | `true` | Enable/disable extreme probability LP strategy |
+| `STRAT_CROSS_TF` | `false` | Enable/disable cross-timeframe RV (requires cross-market feed) |
 
 ## Quick Deploy (from local machine)
 
@@ -71,6 +77,13 @@ export SIGMA_FLOOR_ANNUAL=0.30
 export BINANCE_WS=wss://stream.binance.com:9443/ws/btcusdt@trade
 export TELEGRAM_BOT_TOKEN=<your-token>
 export TELEGRAM_CHAT_ID=<your-chat-id>
+# Strategy toggles (all enabled by default except cross-timeframe)
+# export STRAT_LATENCY_ARB=false       # disable latency arb
+# export STRAT_CERTAINTY_CAPTURE=false  # disable certainty capture
+# export STRAT_CONVEXITY_FADE=false     # disable convexity fade
+# export STRAT_STRIKE_MISALIGN=false    # disable strike misalign
+# export STRAT_LP_EXTREME=false         # disable LP extreme
+# export STRAT_CROSS_TF=true            # enable cross-timeframe (needs feed)
 mkdir -p /root/nitro-fig/logs
 LOGFILE=/root/nitro-fig/logs/bot-$(date +%Y%m%d-%H%M%S).log
 nohup ./target/release/bot >> "$LOGFILE" 2>&1 &

@@ -37,27 +37,37 @@ pub async fn run_engine(
     let mut state = MarketState::new(market, binance_state, oracle);
     let mut risk = StrategyRiskManager::new(config);
 
-    // ── Instantiate all strategies ──
+    // ── Instantiate strategies (only those enabled in config) ──
     let latency_arb = LatencyArb;
     let certainty_capture = CertaintyCapture;
     let convexity_fade = ConvexityFade;
     let strike_misalign = StrikeMisalign;
     let lp_extreme = LpExtreme;
-    // NOTE: cross_timeframe disabled — no cross-market feed exists yet
 
-    // ── Partition strategies by trigger type ──
-    let binance_strategies: Vec<&dyn crate::strategies::Strategy> = vec![
-        &latency_arb,
-        &lp_extreme,
-    ];
-    let pm_strategies: Vec<&dyn crate::strategies::Strategy> = vec![
-        &certainty_capture,
-        &convexity_fade,
-        &lp_extreme,
-    ];
-    let open_strategies: Vec<&dyn crate::strategies::Strategy> = vec![
-        &strike_misalign,
-    ];
+    // ── Partition strategies by trigger type, respecting config toggles ──
+    let mut binance_strategies: Vec<&dyn crate::strategies::Strategy> = Vec::with_capacity(3);
+    if config.strategy_latency_arb { binance_strategies.push(&latency_arb); }
+    if config.strategy_lp_extreme  { binance_strategies.push(&lp_extreme); }
+
+    let mut pm_strategies: Vec<&dyn crate::strategies::Strategy> = Vec::with_capacity(4);
+    if config.strategy_certainty_capture { pm_strategies.push(&certainty_capture); }
+    if config.strategy_convexity_fade    { pm_strategies.push(&convexity_fade); }
+    if config.strategy_lp_extreme        { pm_strategies.push(&lp_extreme); }
+
+    let mut open_strategies: Vec<&dyn crate::strategies::Strategy> = Vec::with_capacity(2);
+    if config.strategy_strike_misalign { open_strategies.push(&strike_misalign); }
+
+    {
+        let enabled: Vec<&str> = [
+            (config.strategy_latency_arb, "latency_arb"),
+            (config.strategy_certainty_capture, "certainty_capture"),
+            (config.strategy_convexity_fade, "convexity_fade"),
+            (config.strategy_strike_misalign, "strike_misalign"),
+            (config.strategy_lp_extreme, "lp_extreme"),
+            (config.strategy_cross_timeframe, "cross_timeframe"),
+        ].iter().filter(|(on, _)| *on).map(|(_, name)| *name).collect();
+        eprintln!("[ENGINE] Strategies enabled: {:?}", enabled);
+    }
 
     let mut signals_buf: Vec<Signal> = Vec::with_capacity(8);
     let mut open_buf: Vec<Signal> = Vec::with_capacity(2);

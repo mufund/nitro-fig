@@ -9,7 +9,7 @@ Trades BTC/ETH/SOL/XRP up/down 5-minute binary markets on Polymarket using Binan
 ## Key Features
 
 - **Single-owner async event loop** -- zero shared mutable state, no locks on the hot path
-- **5 strategies** -- latency arbitrage, certainty capture, convexity fade, strike misalignment, extreme probability LP
+- **6 configurable strategies** -- latency arbitrage, certainty capture, convexity fade, strike misalignment, extreme probability LP, cross-timeframe (disabled by default). Each individually togglable via env vars.
 - **Persistent Binance state** -- EWMA volatility, VWAP, and regime classifier carry across market cycles (only the first market needs warmup)
 - **Binary settlement PnL** -- correct accounting at market end, not at fill time
 - **Side coherence** -- active strategies agree on a directional house view; passive LP is exempt
@@ -47,6 +47,39 @@ DRY_RUN=true BANKROLL=1000 ./target/release/bot
 | `ws_test` | `cargo run --release --bin ws_test` | Test WebSocket connectivity to Binance and Polymarket |
 
 All binaries import from the `polymarket_crypto` library crate (`src/lib.rs`).
+
+## Strategy Configuration
+
+Each strategy can be independently enabled or disabled via environment variables. All active strategies default to **enabled**; set to `0` or `false` to disable.
+
+| Env Var | Strategy | Default |
+|---------|----------|---------|
+| `STRAT_LATENCY_ARB` | Latency Arbitrage | enabled |
+| `STRAT_CERTAINTY_CAPTURE` | Certainty Capture | enabled |
+| `STRAT_CONVEXITY_FADE` | Convexity Fade | enabled |
+| `STRAT_STRIKE_MISALIGN` | Strike Misalignment | enabled |
+| `STRAT_LP_EXTREME` | Extreme Probability LP | enabled |
+| `STRAT_CROSS_TF` | Cross-Timeframe RV | **disabled** |
+
+```bash
+# Example: disable convexity fade and latency arb
+STRAT_CONVEXITY_FADE=false STRAT_LATENCY_ARB=0 ./target/release/bot
+```
+
+## Test Coverage
+
+260+ unit tests across all modules including:
+- Strategy evaluation correctness and edge cases
+- Risk management gate chain (10 sequential gates)
+- Math library (pricing, EWMA, VWAP, regime, normal distribution)
+- Market discovery and orderbook depth
+- End-to-end calculation latency benchmarks (<1us per strategy evaluation)
+
+```bash
+cargo test             # run all tests
+cargo test -- -q       # quiet output
+cargo test latency     # run latency benchmarks only
+```
 
 ## License
 
