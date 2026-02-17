@@ -124,6 +124,14 @@ pub async fn telemetry_writer(
                     tg.send_market_start(&m).await;
                 }
             }
+            TelemetryEvent::StrategyMetrics(sm) => {
+                // Log per-strategy metrics (non-blocking, off hot path)
+                eprintln!(
+                    "[METRICS] {} fills={} rate={:.2} adv_sel={:.3} win={:.2} avg_edge={:.4}",
+                    sm.strategy, sm.fill_count, sm.fill_rate,
+                    sm.adverse_selection, sm.win_rate, sm.avg_edge,
+                );
+            }
             TelemetryEvent::MarketEnd(m) => {
                 eprintln!(
                     "[TELEM] Market ended: {} outcome={:?} pnl=${:.2}",

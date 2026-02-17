@@ -1,10 +1,14 @@
 use std::time::Instant;
 
+use crate::config::Interval;
+
 // ─── Feed Events (produced by WS tasks, consumed by engine) ───
 
 pub enum FeedEvent {
     BinanceTrade(BinanceTrade),
     PolymarketQuote(PolymarketQuote),
+    PolymarketBook(PolymarketBook),
+    CrossMarketQuote(CrossMarketQuoteEvent),
     OrderAck(OrderAck),
     Tick,
 }
@@ -27,6 +31,23 @@ pub struct PolymarketQuote {
     pub down_ask: Option<f64>,
 }
 
+pub struct PolymarketBook {
+    pub recv_at: Instant,
+    pub is_up_token: bool,
+    pub bids: Vec<(f64, f64)>, // (price, size), sorted desc by price
+    pub asks: Vec<(f64, f64)>, // (price, size), sorted asc by price
+}
+
+pub struct CrossMarketQuoteEvent {
+    pub interval: Interval,
+    pub up_bid: f64,
+    pub up_ask: f64,
+    pub down_bid: f64,
+    pub down_ask: f64,
+    pub strike: f64,
+    pub end_ms: i64,
+}
+
 // ─── Market Info ───
 
 #[derive(Clone)]
@@ -41,7 +62,7 @@ pub struct MarketInfo {
 
 // ─── Strategy Output ───
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Side {
     Up,
     Down,
@@ -56,6 +77,15 @@ impl std::fmt::Display for Side {
     }
 }
 
+/// Evaluation trigger: which event type a strategy wants to evaluate on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EvalTrigger {
+    BinanceTrade,
+    PolymarketQuote,
+    Both,
+    MarketOpen,
+}
+
 pub struct Signal {
     pub strategy: &'static str,
     pub side: Side,
@@ -64,6 +94,18 @@ pub struct Signal {
     pub market_price: f64,
     pub confidence: f64,
     pub size_frac: f64,
+    pub is_passive: bool,
+}
+
+// ─── Settlement ───
+
+/// Recorded fill for settlement PnL computation.
+pub struct Fill {
+    pub order_id: u64,
+    pub strategy: &'static str,
+    pub side: Side,
+    pub price: f64,
+    pub size: f64,
 }
 
 // ─── Orders & Execution ───
@@ -75,6 +117,7 @@ pub struct Order {
     pub size: f64,
     pub strategy: &'static str,
     pub signal_edge: f64,
+    pub is_passive: bool,
     pub created_at: Instant,
 }
 
@@ -103,6 +146,7 @@ pub enum TelemetryEvent {
     OrderResult(FillRecord),
     MarketStart(MarketStartRecord),
     MarketEnd(MarketEndRecord),
+    StrategyMetrics(StrategyMetricsRecord),
 }
 
 pub struct SignalRecord {
@@ -118,7 +162,7 @@ pub struct SignalRecord {
     pub distance: f64,
     pub time_left_s: f64,
     pub eval_latency_us: u64,
-    pub selected: bool, // was this signal chosen by select_best()?
+    pub selected: bool,
 }
 
 pub struct LatencyRecord {
@@ -142,7 +186,8 @@ pub struct OrderRecord {
 pub struct FillRecord {
     pub ts_ms: i64,
     pub order_id: u64,
-    pub strategy: String, // which strategy triggered this order
+    pub strategy: String,
+    pub side: Side,
     pub status: String,
     pub filled_price: Option<f64>,
     pub filled_size: Option<f64>,
@@ -178,4 +223,14 @@ pub struct MarketEndRecord {
     pub total_filled: u32,
     pub gross_pnl: f64,
     pub per_strategy: Vec<PerStrategyEnd>,
+}
+
+pub struct StrategyMetricsRecord {
+    pub ts_ms: i64,
+    pub strategy: String,
+    pub fill_count: u32,
+    pub fill_rate: f64,
+    pub adverse_selection: f64,
+    pub win_rate: f64,
+    pub avg_edge: f64,
 }

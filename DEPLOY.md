@@ -11,105 +11,71 @@
 
 | What | Path |
 |------|------|
-| Source + binary | `/root/polymarket-btc/` |
-| Release binary | `/root/polymarket-btc/target/release/bot` |
-| Market logs | `/root/polymarket-btc/logs/{interval}/{slug}/` |
-| Bot output log | `/root/bot_tg.log` |
+| Source | `/root/nitro-fig/` |
+| Release binary | `/root/nitro-fig/target/release/bot` |
+| Start script | `/root/nitro-fig/start.sh` |
+| Log directory | `/root/nitro-fig/logs/` |
+| Latest log symlink | `/root/nitro-fig/logs/latest.log` |
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ASSET` | `btc` | Asset to trade: `btc`, `eth`, `sol`, `xrp` |
+| `DRY_RUN` | `true` | Simulate fills (no real orders). Set `false` for live |
+| `BANKROLL` | `1000` | Total bankroll in USD |
+| `MAX_EXPOSURE_FRAC` | `0.15` | Max portfolio exposure as fraction of bankroll |
+| `ORACLE_DELTA_S` | `2.0` | Oracle timestamp uncertainty in seconds |
+| `EWMA_LAMBDA` | `0.94` | EWMA decay factor for realized vol |
+| `SIGMA_FLOOR_ANNUAL` | `0.30` | Minimum annualized vol (prevents overconfidence) |
+| `DAILY_LOSS_HALT` | `-0.03` | Daily loss fraction that triggers halt |
+| `WEEKLY_LOSS_HALT` | `-0.08` | Weekly loss fraction that triggers halt |
+| `ASSET` | `btc` | Asset: `btc`, `eth`, `sol`, `xrp` |
 | `INTERVAL` | `5m` | Market interval: `5m`, `15m`, `1h`, `4h` |
-| `DRY_RUN` | `true` | Simulate fills (no real orders). Set `false` for live trading |
-| `BINANCE_WS` | auto-derived | Binance trade stream. Auto: `wss://stream.binance.com:9443/ws/{asset}usdt@trade` |
-| `BINANCE_WS_FALLBACK` | auto-derived | Binance US fallback. Auto: `wss://stream.binance.us:9443/ws/{asset}usd@trade` |
-| `PM_CLOB_WS` | `wss://ws-subscriptions-clob.polymarket.com/ws/market` | Polymarket CLOB WebSocket |
-| `GAMMA_API_URL` | `https://gamma-api.polymarket.com` | Gamma API for market discovery |
-| `SERIES_ID` | auto-derived | Series ID for market discovery. Auto-derived from ASSET+INTERVAL |
-| `MAX_POSITION_USD` | `100` | Max total exposure per market |
-| `MAX_ORDERS_PER_MARKET` | `10` | Max orders per market window |
-| `COOLDOWN_MS` | `5000` | Min milliseconds between orders |
-| `TELEGRAM_BOT_TOKEN` | _(empty)_ | Telegram Bot API token for alerts |
+| `BINANCE_WS` | auto-derived | Binance trade stream URL |
+| `TELEGRAM_BOT_TOKEN` | _(empty)_ | Telegram Bot API token |
 | `TELEGRAM_CHAT_ID` | _(empty)_ | Telegram chat ID for alerts |
-
-**Auto-derived values**: `BINANCE_WS`, `BINANCE_WS_FALLBACK`, and `SERIES_ID` are automatically computed from `ASSET` + `INTERVAL`. You only need to set them explicitly to override the defaults.
 
 ## Quick Deploy (from local machine)
 
 ```bash
-# 1. Sync source to VPS
-rsync -avz --exclude target --exclude .git \
-  /Users/keon/dev/PolymarketBTC15mAssistant/rust/ \
-  root@82.24.195.32:/root/polymarket-btc/
+# 1. Sync source to VPS (exclude target, git, logs, and start.sh)
+rsync -az --delete \
+  --exclude 'target' --exclude '.git' --exclude 'logs' --exclude 'start.sh' \
+  /Users/keon/dev/mu/nitro-fig/ \
+  root@82.24.195.32:/root/nitro-fig/
 
 # 2. Build on VPS
 ssh root@82.24.195.32 "source ~/.cargo/env && \
-  cd /root/polymarket-btc && \
+  cd /root/nitro-fig && \
   cargo build --release"
+
+# 3. Start
+ssh root@82.24.195.32 "bash /root/nitro-fig/start.sh"
 ```
 
-## Running
+## Start Script
 
-### BTC 5m (default)
-
-```bash
-DRY_RUN=true \
-TELEGRAM_BOT_TOKEN=<your-bot-token> \
-TELEGRAM_CHAT_ID=<your-chat-id> \
-nohup ./target/release/bot > /root/bot_tg.log 2>&1 &
-```
-
-### BTC 15m
+`/root/nitro-fig/start.sh`:
 
 ```bash
-ASSET=btc INTERVAL=15m \
-DRY_RUN=true \
-TELEGRAM_BOT_TOKEN=<your-bot-token> \
-TELEGRAM_CHAT_ID=<your-chat-id> \
-nohup ./target/release/bot > /root/bot_btc15m.log 2>&1 &
-```
-
-### ETH 15m
-
-```bash
-ASSET=eth INTERVAL=15m \
-DRY_RUN=true \
-TELEGRAM_BOT_TOKEN=<your-bot-token> \
-TELEGRAM_CHAT_ID=<your-chat-id> \
-nohup ./target/release/bot > /root/bot_eth15m.log 2>&1 &
-```
-
-### SOL 15m
-
-```bash
-ASSET=sol INTERVAL=15m \
-DRY_RUN=true \
-TELEGRAM_BOT_TOKEN=<your-bot-token> \
-TELEGRAM_CHAT_ID=<your-chat-id> \
-nohup ./target/release/bot > /root/bot_sol15m.log 2>&1 &
-```
-
-### BTC 4h
-
-```bash
-ASSET=btc INTERVAL=4h \
-DRY_RUN=true \
-TELEGRAM_BOT_TOKEN=<your-bot-token> \
-TELEGRAM_CHAT_ID=<your-chat-id> \
-nohup ./target/release/bot > /root/bot_btc4h.log 2>&1 &
-```
-
-### Running Multiple Instances
-
-You can run multiple asset/interval combinations simultaneously. Each instance writes to its own log directory (`logs/{interval}/{slug}/`):
-
-```bash
-# BTC 5m + ETH 15m + SOL 15m simultaneously
-ASSET=btc INTERVAL=5m  DRY_RUN=true nohup ./target/release/bot > /root/bot_btc5m.log 2>&1 &
-ASSET=eth INTERVAL=15m DRY_RUN=true nohup ./target/release/bot > /root/bot_eth15m.log 2>&1 &
-ASSET=sol INTERVAL=15m DRY_RUN=true nohup ./target/release/bot > /root/bot_sol15m.log 2>&1 &
+#!/bin/bash
+cd /root/nitro-fig
+pkill -f "target/release/bot" 2>/dev/null
+sleep 1
+export DRY_RUN=true
+export BANKROLL=1000
+export MAX_EXPOSURE_FRAC=0.15
+export ORACLE_DELTA_S=2.0
+export EWMA_LAMBDA=0.94
+export SIGMA_FLOOR_ANNUAL=0.30
+export BINANCE_WS=wss://stream.binance.com:9443/ws/btcusdt@trade
+export TELEGRAM_BOT_TOKEN=<your-token>
+export TELEGRAM_CHAT_ID=<your-chat-id>
+mkdir -p /root/nitro-fig/logs
+LOGFILE=/root/nitro-fig/logs/bot-$(date +%Y%m%d-%H%M%S).log
+nohup ./target/release/bot >> "$LOGFILE" 2>&1 &
+echo "PID=$! LOG=$LOGFILE"
+ln -sf "$LOGFILE" /root/nitro-fig/logs/latest.log
 ```
 
 ## Monitoring
@@ -117,51 +83,55 @@ ASSET=sol INTERVAL=15m DRY_RUN=true nohup ./target/release/bot > /root/bot_sol15
 ```bash
 ssh root@82.24.195.32
 
-# Live bot output
-tail -f /root/bot_tg.log
+# Live log output
+tail -f /root/nitro-fig/logs/latest.log
+
+# Watch only signals and fills
+tail -f /root/nitro-fig/logs/latest.log | grep -E 'SIG|FILL|ENGINE.*ended'
+
+# Watch diagnostic logs
+tail -f /root/nitro-fig/logs/latest.log | grep DIAG
 
 # Check if running
 ps aux | grep bot
 
-# Stop all bot instances
+# Stop
 pkill -f "target/release/bot"
 
-# View latest market signals (any interval)
-ls -lt /root/polymarket-btc/logs/15m/ | head -5
-tail -20 /root/polymarket-btc/logs/15m/*/signals.csv
+# Count regime types in current session
+grep -c 'regime=Range' /root/nitro-fig/logs/latest.log
+grep -c 'regime=Ambiguous' /root/nitro-fig/logs/latest.log
+grep -c 'regime=Trend' /root/nitro-fig/logs/latest.log
 
-# View latest orders
-tail -20 /root/polymarket-btc/logs/15m/*/orders.csv
+# See per-strategy fill breakdown
+grep 'ENGINE.*:' /root/nitro-fig/logs/latest.log
 ```
 
-## Test WebSocket Connectivity
+## Log Format
 
-```bash
-# Test BTC (default)
-ssh root@82.24.195.32 "cd /root/polymarket-btc && ./target/release/ws_test"
-
-# Test ETH
-ssh root@82.24.195.32 "cd /root/polymarket-btc && ASSET=eth INTERVAL=15m ./target/release/ws_test"
-```
-
-## Output Files (per market)
-
-Each market creates a directory under `logs/{interval}/{slug}/`:
+Each market produces log output like:
 
 ```
-logs/15m/btc-updown-15m-1771226700/
-├── signals.csv      # Every strategy signal (thousands per market)
-├── latency.csv      # binance_recv, pm_recv, eval, e2e timing (us)
-├── orders.csv       # Order attempts with strategy, edge, price, size
-├── fills.csv        # Fill results with latency, theoretical PnL
-└── market_info.txt  # slug, strike, start_ms, end_ms
+[ENGINE] Running market btc-updown-5m-1771291200 | strike=$68938 | window=300s | bankroll=$1000 | ewma_n=198
+[ENGINE] Warmup complete: sigma_real=0.00009092 ...
+[DIAG] t_left=291s sigma=0.00009092 z=0.00 dist=$0 regime=Ambiguous(73%/251) house=None ...
+[DIAG]   certainty_capture: z_abs=0.00 ... -> z<1.5
+[DIAG]   convexity_fade: regime=Ambiguous ... -> PASS(regime+dist)
+[SIG] strike_misalign Down edge=0.078 fair=0.597 mkt=0.519 sz=$20.0 ACTIVE
+[FILL] #1 [strike_misalign] Down Filled price=Some(0.519) size=Some(20.0) lat=0.0ms
+[SIG] convexity_fade Down edge=0.080 fair=0.690 mkt=0.610 sz=$5.0 ACTIVE
+[FILL] #3 [convexity_fade] Down Filled price=Some(0.61) size=Some(5.0) lat=0.0ms
+[ENGINE] Market btc-updown-5m-1771291200 ended | outcome=Down | house=Some(Down) | sig=4186 ord=12 fill=12 pnl=$58.04
+[ENGINE]   strike_misalign: sig=94 ord=2 fill=2 pnl=$19.42 avg_edge=0.082
+[ENGINE]   latency_arb: sig=1440 ord=4 fill=4 pnl=$28.02 avg_edge=0.042
+[ENGINE]   convexity_fade: sig=2652 ord=6 fill=6 pnl=$10.60 avg_edge=0.053
 ```
 
 ## Notes
 
-- **Binance WS geo-blocking**: Binance global endpoint (`stream.binance.com`) is blocked from US IPs (HTTP 451). The EU VPS works fine. If deploying from US, use `stream.binance.us` via `BINANCE_WS` env var.
-- **Strike price**: Currently uses first Binance spot price as strike. Polymarket uses Chainlink oracle price (small difference). This is a known limitation.
-- **Market cycling**: The bot runs indefinitely, auto-discovering the next market after each one ends. No cron needed.
-- **Build on VPS**: Cross-compiling from macOS aarch64 to Linux x86_64 requires a toolchain. Build directly on the VPS instead.
-- **Log rotation**: Signal CSVs accumulate. Clean up old log directories periodically.
-- **1h market discovery**: 1h markets use human-readable slugs, not `btc-updown-1h-{ts}`. Discovery falls back to series_id search automatically.
+- **Binance WS geo-blocking**: `stream.binance.com` is blocked from US IPs. The EU VPS works fine.
+- **Strike price**: Uses first Binance spot price. Polymarket uses Chainlink oracle (small difference handled by `ORACLE_DELTA_S`).
+- **Market cycling**: Bot runs indefinitely, auto-discovering next market. No cron needed.
+- **Build on VPS**: Cross-compiling from macOS aarch64 to Linux x86_64 requires a toolchain. Build directly on VPS.
+- **start.sh is server-only**: The rsync excludes `start.sh` to avoid overwriting it. Edit directly on the server.
+- **EWMA persistence**: The bot must stay running across markets for EWMA to accumulate. Restarting resets to cold start (10s warmup).

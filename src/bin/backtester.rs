@@ -4,11 +4,15 @@
 
 use std::time::Instant;
 
-use polymarket_crypto::engine::state::MarketState;
-use polymarket_crypto::strategies::distance_fade::DistanceFade;
-use polymarket_crypto::strategies::momentum::Momentum;
-use polymarket_crypto::strategies::settlement_sniper::SettlementSniper;
-use polymarket_crypto::strategies::{evaluate_all, Strategy};
+use polymarket_crypto::engine::state::{BinanceState, MarketState};
+use polymarket_crypto::math::oracle::OracleBasis;
+use polymarket_crypto::strategies::latency_arb::LatencyArb;
+use polymarket_crypto::strategies::certainty_capture::CertaintyCapture;
+use polymarket_crypto::strategies::convexity_fade::ConvexityFade;
+use polymarket_crypto::strategies::cross_timeframe::CrossTimeframe;
+use polymarket_crypto::strategies::strike_misalign::StrikeMisalign;
+use polymarket_crypto::strategies::lp_extreme::LpExtreme;
+use polymarket_crypto::strategies::{evaluate_filtered, Strategy};
 use polymarket_crypto::types::*;
 
 fn main() {
@@ -43,23 +47,47 @@ fn main() {
         .expect("No Binance trades");
     eprintln!("Strike: ${:.2}", strike);
 
-    // Initialize MarketState — same struct used in live trading
-    let mut state = MarketState::new(MarketInfo {
-        slug: slug.clone(),
-        start_ms,
-        end_ms,
-        up_token_id: String::new(),
-        down_token_id: String::new(),
-        strike,
-    });
+    // Initialize MarketState with persistent BinanceState
+    let oracle = OracleBasis::new(0.0, 2.0); // default oracle params for backtest
+    let bs = BinanceState::new(0.94, 10, 0.30, 60_000, 30_000);
+    let mut state = MarketState::new(
+        MarketInfo {
+            slug: slug.clone(),
+            start_ms,
+            end_ms,
+            up_token_id: String::new(),
+            down_token_id: String::new(),
+            strike,
+        },
+        bs,
+        oracle,
+    );
 
-    // Same strategies as live engine — no duplication
-    let strategies: Vec<Box<dyn Strategy>> = vec![
-        Box::new(DistanceFade),
-        Box::new(Momentum),
-        Box::new(SettlementSniper),
+    // All 6 strategies — same as live engine
+    let latency_arb = LatencyArb;
+    let certainty_capture = CertaintyCapture;
+    let convexity_fade = ConvexityFade;
+    let cross_timeframe = CrossTimeframe;
+    let strike_misalign = StrikeMisalign;
+    let lp_extreme = LpExtreme;
+
+    // Partition by trigger type
+    let binance_strategies: Vec<&dyn Strategy> = vec![
+        &latency_arb,
+        &lp_extreme,
     ];
+    let pm_strategies: Vec<&dyn Strategy> = vec![
+        &certainty_capture,
+        &convexity_fade,
+        &cross_timeframe,
+        &lp_extreme,
+    ];
+    let open_strategies: Vec<&dyn Strategy> = vec![
+        &strike_misalign,
+    ];
+
     let mut signal_buf: Vec<Signal> = Vec::new();
+    let mut open_buf: Vec<Signal> = Vec::new();
     let mut results: Vec<BacktestEntry> = Vec::new();
     let mut total_evals = 0u64;
     let fake_instant = Instant::now();
@@ -76,6 +104,35 @@ fn main() {
                     qty: t.qty,
                     is_buy: t.is_buy,
                 });
+
+                if !state.has_data() {
+                    continue;
+                }
+
+                total_evals += 1;
+                let now_ms = t.ts_ms;
+
+                // Evaluate Binance-triggered strategies
+                evaluate_filtered(&binance_strategies, &state, now_ms, &mut signal_buf);
+
+                // MarketOpen strategies in first 15s
+                let elapsed_ms = now_ms - start_ms;
+                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                    evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
+                    signal_buf.extend(open_buf.drain(..));
+                }
+
+                for sig in &signal_buf {
+                    results.push(BacktestEntry {
+                        strategy: sig.strategy.to_string(),
+                        side: format!("{}", sig.side),
+                        edge: sig.edge,
+                        fair_value: sig.fair_value,
+                        market_price: sig.market_price,
+                        time_left_s: state.time_left_s(now_ms),
+                        is_passive: sig.is_passive,
+                    });
+                }
             }
             Event::Polymarket(q) => {
                 state.on_polymarket_quote(PolymarketQuote {
@@ -94,8 +151,15 @@ fn main() {
                 total_evals += 1;
                 let now_ms = q.ts_ms;
 
-                // Evaluate all strategies — same code path as live engine
-                evaluate_all(&strategies, &state, now_ms, &mut signal_buf);
+                // Evaluate PM-triggered strategies
+                evaluate_filtered(&pm_strategies, &state, now_ms, &mut signal_buf);
+
+                // MarketOpen strategies in first 15s
+                let elapsed_ms = now_ms - start_ms;
+                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                    evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
+                    signal_buf.extend(open_buf.drain(..));
+                }
 
                 for sig in &signal_buf {
                     results.push(BacktestEntry {
@@ -105,6 +169,7 @@ fn main() {
                         fair_value: sig.fair_value,
                         market_price: sig.market_price,
                         time_left_s: state.time_left_s(now_ms),
+                        is_passive: sig.is_passive,
                     });
                 }
             }
@@ -112,11 +177,11 @@ fn main() {
     }
 
     // Determine outcome
-    let final_distance = state.binance_price - strike;
+    let final_distance = state.bn.binance_price - strike;
     let outcome_up = final_distance >= 0.0;
     eprintln!(
         "Final price: ${:.2} | Distance: ${:.0} | Outcome: {}",
-        state.binance_price,
+        state.bn.binance_price,
         final_distance,
         if outcome_up { "UP wins" } else { "DOWN wins" }
     );
@@ -128,12 +193,12 @@ fn main() {
 // ─── Results Printer ───
 
 fn print_results(results: &[BacktestEntry], outcome_up: bool, total_evals: u64) {
-    eprintln!("\n{:-<80}", "");
+    eprintln!("\n{:-<90}", "");
     eprintln!(
-        "{:<20} {:>6} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8}",
-        "Strategy", "Side", "Edge", "Fair", "Ask", "T-left", "Return%", "Correct"
+        "{:<20} {:>6} {:>8} {:>8} {:>8} {:>8} {:>10} {:>8} {:>6}",
+        "Strategy", "Side", "Edge", "Fair", "Ask", "T-left", "Return%", "Correct", "Type"
     );
-    eprintln!("{:-<80}", "");
+    eprintln!("{:-<90}", "");
 
     let mut by_strategy: std::collections::HashMap<String, Vec<&BacktestEntry>> =
         std::collections::HashMap::new();
@@ -150,19 +215,25 @@ fn print_results(results: &[BacktestEntry], outcome_up: bool, total_evals: u64) 
         };
 
         eprintln!(
-            "{:<20} {:>6} {:>8.3} {:>8.3} {:>8.3} {:>7.0}s {:>9.1}% {:>8}",
+            "{:<20} {:>6} {:>8.3} {:>8.3} {:>8.3} {:>7.0}s {:>9.1}% {:>8} {:>6}",
             entry.strategy, entry.side, entry.edge, entry.fair_value,
             entry.market_price, entry.time_left_s, ret,
-            if correct { "✓" } else { "✗" },
+            if correct { "Y" } else { "N" },
+            if entry.is_passive { "PASS" } else { "ACTV" },
         );
     }
 
-    eprintln!("\n{:-<80}", "");
+    eprintln!("\n{:-<90}", "");
     eprintln!("Summary:");
     eprintln!("  Total evaluations: {}", total_evals);
     eprintln!("  Total signals: {}", results.len());
 
-    for (strategy, entries) in &by_strategy {
+    // Sort strategies for consistent output
+    let mut strat_names: Vec<&String> = by_strategy.keys().collect();
+    strat_names.sort();
+
+    for strategy in strat_names {
+        let entries = &by_strategy[strategy];
         let correct: usize = entries.iter().filter(|e| {
             let is_up = e.side == "UP";
             (is_up && outcome_up) || (!is_up && !outcome_up)
@@ -178,11 +249,18 @@ fn print_results(results: &[BacktestEntry], outcome_up: bool, total_evals: u64) 
             }
         }).sum();
 
+        let avg_edge: f64 = if !entries.is_empty() {
+            entries.iter().map(|e| e.edge).sum::<f64>() / entries.len() as f64
+        } else {
+            0.0
+        };
+
         eprintln!(
-            "  {}: {} signals, {}/{} correct, invested ${:.2} -> profit ${:.2} ({:.0}%)",
+            "  {}: {} signals, {}/{} correct, invested ${:.2} -> profit ${:.2} ({:.0}%) avg_edge={:.3}",
             strategy, entries.len(), correct, entries.len(),
             total_invested, total_return,
             if total_invested > 0.0 { total_return / total_invested * 100.0 } else { 0.0 },
+            avg_edge,
         );
     }
 }
@@ -196,6 +274,7 @@ struct BacktestEntry {
     fair_value: f64,
     market_price: f64,
     time_left_s: f64,
+    is_passive: bool,
 }
 
 struct BinanceCsvRow { ts_ms: i64, price: f64, qty: f64, is_buy: bool }

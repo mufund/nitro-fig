@@ -1,15 +1,22 @@
 use std::time::Instant;
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::types::{BinanceTrade, FeedEvent};
 
-/// Pure producer: connects to Binance WS, parses trades, sends FeedEvents.
-/// Owns no shared state — only holds a channel sender.
+/// Persistent Binance trade feed. Connects once at startup, stays alive across markets.
+///
+/// Uses a `watch` channel to receive the current market's feed sender.
+/// Between markets the sender is `None` — trades are parsed (keeping the WS alive)
+/// but silently dropped. When a new market starts, main sends `Some(feed_tx)`
+/// and trades flow into the engine channel immediately.
+///
+/// Hot-path cost: one `watch::borrow()` (atomic load, ~1ns) + one `mpsc::send()`.
 pub async fn binance_feed(
-    feed_tx: mpsc::Sender<FeedEvent>,
+    feed_watch: watch::Receiver<Option<mpsc::Sender<FeedEvent>>>,
+    price_tx: watch::Sender<f64>,
     ws_url: String,
     ws_fallback: String,
 ) {
@@ -58,9 +65,13 @@ pub async fn binance_feed(
             if let Message::Text(text) = msg {
                 let recv_at = Instant::now();
                 if let Some(trade) = parse_trade(&text, recv_at) {
-                    if feed_tx.send(FeedEvent::BinanceTrade(trade)).await.is_err() {
-                        eprintln!("[BINANCE] Channel closed, exiting");
-                        return;
+                    // Always publish latest price (used for strike setting)
+                    let _ = price_tx.send(trade.price);
+
+                    // Forward to current market's channel (if active)
+                    let sender = feed_watch.borrow().clone();
+                    if let Some(tx) = sender {
+                        let _ = tx.send(FeedEvent::BinanceTrade(trade)).await;
                     }
                 }
             }

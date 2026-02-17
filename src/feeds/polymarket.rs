@@ -4,9 +4,9 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::types::{FeedEvent, PolymarketQuote};
+use crate::types::{FeedEvent, PolymarketBook, PolymarketQuote};
 
-/// Pure producer: connects to Polymarket CLOB WS, parses best_bid_ask updates.
+/// Pure producer: connects to Polymarket CLOB WS, parses best_bid_ask and book updates.
 /// Owns no shared state — only holds a channel sender.
 pub async fn polymarket_feed(
     feed_tx: mpsc::Sender<FeedEvent>,
@@ -49,8 +49,7 @@ pub async fn polymarket_feed(
         }
         eprintln!("[PM] Subscribed to UP={} DOWN={}", &up_token_id[..8.min(up_token_id.len())], &down_token_id[..8.min(down_token_id.len())]);
 
-        // Ping keepalive
-        let ping_write = feed_tx.clone(); // not used, just to keep task alive
+        let ping_write = feed_tx.clone();
         let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
 
         loop {
@@ -70,8 +69,18 @@ pub async fn polymarket_feed(
 
                     if let Message::Text(text) = msg {
                         let recv_at = Instant::now();
+
+                        // Parse and send quote (best bid/ask)
                         if let Some(quote) = parse_clob_message(&text, recv_at, &up_token_id, &down_token_id) {
                             if feed_tx.send(FeedEvent::PolymarketQuote(quote)).await.is_err() {
+                                eprintln!("[PM] Channel closed, exiting");
+                                return;
+                            }
+                        }
+
+                        // Parse and send full book depth (if book event)
+                        for book in parse_book_events(&text, recv_at, &up_token_id, &down_token_id) {
+                            if feed_tx.send(FeedEvent::PolymarketBook(book)).await.is_err() {
                                 eprintln!("[PM] Channel closed, exiting");
                                 return;
                             }
@@ -79,13 +88,12 @@ pub async fn polymarket_feed(
                     }
                 }
                 _ = ping_interval.tick() => {
-                    // Send ping to keep connection alive
                     let _ = write.send(Message::Ping(vec![])).await;
                 }
             }
         }
 
-        let _ = ping_write; // suppress unused warning
+        let _ = ping_write;
         eprintln!("[PM] Disconnected, reconnecting in {}ms", backoff_ms);
         tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
         backoff_ms = (backoff_ms * 2).min(10_000);
@@ -100,7 +108,6 @@ fn parse_clob_message(
 ) -> Option<PolymarketQuote> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
 
-    // Handle array of events
     let events = if v.is_array() {
         v.as_array()?.clone()
     } else if v.is_object() {
@@ -119,7 +126,6 @@ fn parse_clob_message(
     for event in &events {
         let event_type = event.get("event_type").and_then(|e| e.as_str()).unwrap_or("");
 
-        // Handle best_bid_ask and price_change events
         if event_type == "best_bid_ask" || event_type == "price_change" || event_type == "book" {
             let asset_id = event.get("asset_id").and_then(|a| a.as_str()).unwrap_or("");
 
@@ -160,4 +166,80 @@ fn parse_clob_message(
         down_bid,
         down_ask,
     })
+}
+
+/// Parse full orderbook depth from "book" events.
+fn parse_book_events(
+    text: &str,
+    recv_at: Instant,
+    up_token_id: &str,
+    down_token_id: &str,
+) -> Vec<PolymarketBook> {
+    let mut books = Vec::new();
+    let v: serde_json::Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return books,
+    };
+
+    let events = if v.is_array() {
+        match v.as_array() {
+            Some(a) => a.clone(),
+            None => return books,
+        }
+    } else if v.is_object() {
+        vec![v]
+    } else {
+        return books;
+    };
+
+    for event in &events {
+        let event_type = event.get("event_type").and_then(|e| e.as_str()).unwrap_or("");
+        if event_type != "book" {
+            continue;
+        }
+
+        let asset_id = event.get("asset_id").and_then(|a| a.as_str()).unwrap_or("");
+        let is_up_token = if asset_id == up_token_id {
+            true
+        } else if asset_id == down_token_id {
+            false
+        } else {
+            continue;
+        };
+
+        let bids = parse_price_levels(event.get("bids"));
+        let asks = parse_price_levels(event.get("asks"));
+
+        if bids.is_empty() && asks.is_empty() {
+            continue;
+        }
+
+        books.push(PolymarketBook {
+            recv_at,
+            is_up_token,
+            bids,
+            asks,
+        });
+    }
+
+    books
+}
+
+fn parse_price_levels(val: Option<&serde_json::Value>) -> Vec<(f64, f64)> {
+    let arr = match val.and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+
+    arr.iter()
+        .filter_map(|level| {
+            let price = level
+                .get("price")
+                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))?;
+            let size = level
+                .get("size")
+                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_f64()))?;
+            Some((price, size))
+        })
+        .collect()
 }

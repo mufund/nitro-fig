@@ -1,5 +1,5 @@
 /// Trading interval.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Interval {
     M5,
     M15,
@@ -63,10 +63,29 @@ pub struct Config {
     pub tg_bot_token: Option<String>,
     pub tg_chat_id: Option<String>,
 
-    // Risk
+    // Risk (legacy)
     pub max_position_usd: f64,
     pub max_orders_per_market: u32,
     pub cooldown_ms: i64,
+
+    // Bankroll & portfolio risk
+    pub bankroll: f64,
+    pub max_total_exposure_frac: f64,
+    pub daily_loss_halt_frac: f64,
+    pub weekly_loss_halt_frac: f64,
+
+    // Oracle model
+    pub oracle_beta: f64,
+    pub oracle_delta_s: f64,
+
+    // EWMA
+    pub ewma_lambda: f64,
+    /// Minimum annualized vol (e.g. 0.30 = 30%). Converted to per-second floor.
+    /// Prevents the model from becoming overconfident during low-vol periods.
+    pub sigma_floor_annual: f64,
+
+    // Cross-timeframe (Edge 4)
+    pub cross_timeframe_enabled: bool,
 
     // Mode
     pub dry_run: bool,
@@ -81,7 +100,6 @@ impl Config {
             &std::env::var("INTERVAL").unwrap_or_else(|_| "5m".into()),
         );
 
-        // Auto-derive Binance WS from asset unless explicitly overridden
         let binance_ws = std::env::var("BINANCE_WS").unwrap_or_else(|_| {
             format!("wss://stream.binance.com:9443/ws/{}usdt@trade", asset)
         });
@@ -89,7 +107,6 @@ impl Config {
             format!("wss://stream.binance.us:9443/ws/{}usd@trade", asset)
         });
 
-        // Auto-derive series_id from asset+interval unless explicitly set
         let series_id = std::env::var("SERIES_ID").unwrap_or_else(|_| {
             default_series_id(&asset, &interval).to_string()
         });
@@ -118,6 +135,41 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5000),
+            bankroll: std::env::var("BANKROLL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1000.0),
+            max_total_exposure_frac: std::env::var("MAX_EXPOSURE_FRAC")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.15),
+            daily_loss_halt_frac: std::env::var("DAILY_LOSS_HALT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(-0.03),
+            weekly_loss_halt_frac: std::env::var("WEEKLY_LOSS_HALT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(-0.08),
+            oracle_beta: std::env::var("ORACLE_BETA")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
+            oracle_delta_s: std::env::var("ORACLE_DELTA_S")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2.0),
+            ewma_lambda: std::env::var("EWMA_LAMBDA")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.94),
+            sigma_floor_annual: std::env::var("SIGMA_FLOOR_ANNUAL")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.30),
+            cross_timeframe_enabled: std::env::var("CROSS_TF")
+                .map(|v| v == "1" || v.to_lowercase() == "true")
+                .unwrap_or(false),
             dry_run: std::env::var("DRY_RUN")
                 .map(|v| v == "1" || v.to_lowercase() == "true")
                 .unwrap_or(true),

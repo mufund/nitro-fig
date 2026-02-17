@@ -1,21 +1,27 @@
-pub mod distance_fade;
-pub mod momentum;
-pub mod settlement_sniper;
+pub mod latency_arb;
+pub mod certainty_capture;
+pub mod convexity_fade;
+pub mod cross_timeframe;
+pub mod strike_misalign;
+pub mod lp_extreme;
 
 use crate::engine::state::MarketState;
-use crate::types::Signal;
+use crate::types::{EvalTrigger, Signal};
 
 /// Strategy trait: stateless pure function of market state.
 /// Same code runs in live engine and backtester.
 pub trait Strategy: Send + Sync {
     fn name(&self) -> &'static str;
+    fn trigger(&self) -> EvalTrigger {
+        EvalTrigger::PolymarketQuote
+    }
     fn evaluate(&self, state: &MarketState, now_ms: i64) -> Option<Signal>;
 }
 
-/// Evaluate all strategies, filling pre-allocated buffer.
+/// Evaluate a filtered subset of strategies, filling pre-allocated buffer.
 #[inline]
-pub fn evaluate_all(
-    strategies: &[Box<dyn Strategy>],
+pub fn evaluate_filtered(
+    strategies: &[&dyn Strategy],
     state: &MarketState,
     now_ms: i64,
     buf: &mut Vec<Signal>,
@@ -26,15 +32,6 @@ pub fn evaluate_all(
             buf.push(sig);
         }
     }
-}
-
-/// Select best signal: highest edge × confidence.
-pub fn select_best(signals: &[Signal]) -> Option<&Signal> {
-    signals.iter().max_by(|a, b| {
-        let sa = a.edge * a.confidence;
-        let sb = b.edge * b.confidence;
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-    })
 }
 
 /// Half-Kelly position sizing.

@@ -3,14 +3,16 @@ mod engine;
 mod feeds;
 mod gateway;
 mod market;
+mod math;
 mod strategies;
 mod telemetry;
 mod types;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use config::Config;
 use engine::runner::run_engine;
+use engine::state::BinanceState;
 use feeds::binance::binance_feed;
 use feeds::polymarket::polymarket_feed;
 use gateway::order::order_gateway;
@@ -26,11 +28,44 @@ async fn main() {
     eprintln!("╔══════════════════════════════════════════════════╗");
     eprintln!("║  Polymarket {} {} Trading System", config.asset_label(), config.interval.label());
     eprintln!("║  Series: {} | Dry run: {}", config.series_id, config.dry_run);
-    eprintln!("║  Max position: ${:.0} | Max orders: {}", config.max_position_usd, config.max_orders_per_market);
+    eprintln!("║  Bankroll: ${:.0} | Max exposure: {:.0}%", config.bankroll, config.max_total_exposure_frac * 100.0);
+    eprintln!("║  Oracle: β={:.2} δ={:.1}s | EWMA λ={:.2}", config.oracle_beta, config.oracle_delta_s, config.ewma_lambda);
+    let secs_per_year: f64 = 365.25 * 24.0 * 3600.0;
+    let sigma_floor_ps = config.sigma_floor_annual / secs_per_year.sqrt();
+    eprintln!("║  Vol floor: {:.0}% annual → σ_floor={:.6}/s", config.sigma_floor_annual * 100.0, sigma_floor_ps);
     eprintln!("╚══════════════════════════════════════════════════╝");
 
+    // ── Persistent Binance feed (lives across all markets) ──
+    let (feed_swap_tx, feed_swap_rx) = watch::channel::<Option<mpsc::Sender<FeedEvent>>>(None);
+    let (price_tx, mut price_rx) = watch::channel::<f64>(0.0);
+
+    let bn_url = config.binance_ws.clone();
+    let bn_fallback = config.binance_ws_fallback.clone();
+    let _binance_handle = tokio::spawn(async move {
+        binance_feed(feed_swap_rx, price_tx, bn_url, bn_fallback).await;
+    });
+
+    // Wait for first Binance price (only once, at startup)
+    eprintln!("[MAIN] Waiting for first Binance price...");
+    while *price_rx.borrow() == 0.0 {
+        if price_rx.changed().await.is_err() {
+            eprintln!("[MAIN] Binance feed died before first price");
+            return;
+        }
+    }
+    eprintln!("[MAIN] Binance online: ${:.2}", *price_rx.borrow());
+
+    // Persistent Binance state — created once, threaded through every market
+    let mut binance_state = BinanceState::new(
+        config.ewma_lambda,
+        10,                          // min_samples: 10 one-second samples
+        config.sigma_floor_annual,
+        60_000,                      // VWAP window: 60s
+        30_000,                      // Regime window: 30s
+    );
+
     loop {
-        // 1. Discover next 5m market
+        // 1. Discover next market
         let market = match discover_next_market(&http, &config).await {
             Ok(m) => m,
             Err(e) => {
@@ -50,51 +85,25 @@ async fn main() {
             &market.down_token_id[..8.min(market.down_token_id.len())],
         );
 
-        // 2. Wait until 10s before market start (WS warmup)
+        // 2. Wait until 10s before market start
         if wait_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms as u64)).await;
         }
 
-        // 3. Create channels
-        let (feed_tx, mut feed_rx) = mpsc::channel::<FeedEvent>(4096);
+        // 3. Set strike from latest Binance price (instant — no waiting)
+        let mut market = market;
+        market.strike = *price_rx.borrow();
+        eprintln!("[MAIN] Strike set: ${:.2}", market.strike);
+
+        // 4. Create per-market channels
+        let (feed_tx, feed_rx) = mpsc::channel::<FeedEvent>(4096);
         let (order_tx, order_rx) = mpsc::channel::<Order>(64);
         let (telem_tx, telem_rx) = mpsc::channel::<TelemetryEvent>(4096);
 
-        // 4. Spawn Binance WS feed producer
-        let binance_feed_tx = feed_tx.clone();
-        let bn_url = config.binance_ws.clone();
-        let bn_fallback = config.binance_ws_fallback.clone();
-        let binance_handle = tokio::spawn(async move {
-            binance_feed(binance_feed_tx, bn_url, bn_fallback).await;
-        });
+        // 5. Activate Binance → this market's feed channel
+        let _ = feed_swap_tx.send(Some(feed_tx.clone()));
 
-        // 5. Wait for first Binance price → use as strike
-        eprintln!("[MAIN] Waiting for first Binance price...");
-        let mut strike = 0.0_f64;
-        let mut buffered_events: Vec<FeedEvent> = Vec::new();
-
-        loop {
-            if let Some(event) = feed_rx.recv().await {
-                match &event {
-                    FeedEvent::BinanceTrade(t) => {
-                        if strike == 0.0 {
-                            strike = t.price;
-                            eprintln!("[MAIN] Strike set: ${:.2}", strike);
-                            buffered_events.push(event);
-                            break;
-                        }
-                    }
-                    _ => {
-                        buffered_events.push(event);
-                    }
-                }
-            }
-        }
-
-        let mut market = market;
-        market.strike = strike;
-
-        // 6. Spawn Polymarket CLOB WS feed producer
+        // 6. Spawn Polymarket CLOB WS feed (per-market, new token IDs)
         let pm_feed_tx = feed_tx.clone();
         let pm_url = config.polymarket_clob_ws.clone();
         let up_tok = market.up_token_id.clone();
@@ -130,41 +139,20 @@ async fn main() {
             telemetry_writer(telem_rx, telem_config, telem_slug).await;
         });
 
-        // Drop our copy of feed_tx so engine's feed_rx will close when all producers stop
+        // Drop our copy of feed_tx so engine's feed_rx closes when all producers stop
         drop(feed_tx);
 
-        // 10. Re-inject buffered events into feed_rx
-        //     Since we dropped our feed_tx, we need a new approach.
-        //     We'll create a merged receiver that first yields buffered events.
-        //     Simpler: just process buffered events inline before the engine loop.
-        //     Actually, let's create a wrapper channel.
-        let (merged_tx, merged_rx) = mpsc::channel::<FeedEvent>(4096);
+        // 10. Run core engine (blocks until market ends), returns BinanceState
+        binance_state = run_engine(market.clone(), binance_state, feed_rx, order_tx, telem_tx, &config).await;
 
-        // Send buffered events
-        for evt in buffered_events {
-            let _ = merged_tx.send(evt).await;
-        }
+        // 11. Pause Binance delivery (trades dropped between markets)
+        let _ = feed_swap_tx.send(None);
 
-        // Spawn a relay task: feed_rx → merged_tx
-        let relay_handle = tokio::spawn(async move {
-            while let Some(evt) = feed_rx.recv().await {
-                if merged_tx.send(evt).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        // 11. Run core engine (this blocks until market ends)
-        run_engine(market.clone(), merged_rx, order_tx, telem_tx, &config).await;
-
-        // 12. Cleanup
-        binance_handle.abort();
+        // 12. Cleanup per-market tasks (NOT Binance — it persists)
         pm_handle.abort();
         tick_handle.abort();
-        relay_handle.abort();
-        // gw_handle and telem_handle drain naturally
 
-        // Wait a bit for telemetry to flush
+        // Let telemetry flush
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         gw_handle.abort();
         telem_handle.abort();
