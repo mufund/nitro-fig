@@ -60,7 +60,8 @@ async fn main() {
         };
 
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let wait_ms = (market.start_ms - 5_000 - now_ms).max(0);
+        let pre_wake_ms = config.interval.recorder_pre_wake_secs() * 1000;
+        let wait_ms = (market.start_ms - pre_wake_ms - now_ms).max(0);
         eprintln!(
             "[REC] Next: {} | starts in {:.0}s | cycle {}/{}",
             market.slug,
@@ -77,9 +78,9 @@ async fn main() {
         let dir = format!("logs/{}/{}", config.interval.label(), market.slug);
         fs::create_dir_all(&dir).ok();
 
-        // Fetch strike from Binance spot before market starts
-        let strike = fetch_binance_price(&client, &config).await;
-        eprintln!("[REC] Strike (pre-open Binance): ${:.2}", strike);
+        // Fetch strike from Binance candle open (klines API) — correct for all intervals
+        let strike = fetch_binance_candle_open(&client, &config).await;
+        eprintln!("[REC] Strike (candle open): ${:.2}", strike);
 
         // Write market info (including strike)
         {
@@ -113,8 +114,9 @@ async fn main() {
             record_polymarket_ws(&pm_ws, &pm_dir, &pm_up, &pm_down, pm_stop).await;
         });
 
-        // Wait until market end + 30s buffer
-        let end_wait = (market.end_ms + 30_000 - chrono::Utc::now().timestamp_millis()).max(0);
+        // Wait until market end + interval-aware buffer
+        let post_end_ms = config.interval.recorder_post_end_secs() * 1000;
+        let end_wait = (market.end_ms + post_end_ms - chrono::Utc::now().timestamp_millis()).max(0);
         tokio::time::sleep(tokio::time::Duration::from_millis(end_wait as u64)).await;
 
         stop.store(true, Ordering::Relaxed);
@@ -132,8 +134,51 @@ async fn main() {
     }
 }
 
-/// Fetch current BTC spot price from Binance REST for strike.
-async fn fetch_binance_price(client: &reqwest::Client, config: &Config) -> f64 {
+/// Fetch the Binance candle OPEN price for the current interval via klines API.
+///
+/// This is the correct strike reference for all intervals per Polymarket rules.
+/// Falls back to spot ticker if klines fails.
+async fn fetch_binance_candle_open(client: &reqwest::Client, config: &Config) -> f64 {
+    let symbol = format!("{}USDT", config.asset_label().to_uppercase());
+    let kline_interval = config.interval.binance_kline_label();
+    let url = format!(
+        "https://api.binance.com/api/v3/klines?symbol={}&interval={}&limit=1",
+        symbol, kline_interval
+    );
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let text = resp.text().await.unwrap_or_default();
+            // klines: [[open_time, open, high, low, close, volume, close_time, ...], ...]
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(candle) = v.as_array().and_then(|a| a.first()) {
+                    if let Some(open_str) = candle.get(1).and_then(|o| o.as_str()) {
+                        if let Ok(open_price) = open_str.parse::<f64>() {
+                            eprintln!(
+                                "[REC] Binance kline {} open=${:.2} (interval={})",
+                                symbol, open_price, kline_interval
+                            );
+                            return open_price;
+                        }
+                    }
+                }
+            }
+            eprintln!("[REC] Failed to parse klines, falling back to spot");
+        }
+        Err(e) => {
+            eprintln!("[REC] Klines fetch failed: {}, falling back to spot", e);
+        }
+    }
+
+    // Fallback: spot ticker
+    if config.interval.window_secs() > 900 {
+        eprintln!("[REC][WARN] Using spot price as strike for {}+ interval", config.interval.label());
+    }
+    fetch_binance_spot(client, config).await
+}
+
+/// Fallback: fetch current spot price from Binance REST.
+async fn fetch_binance_spot(client: &reqwest::Client, config: &Config) -> f64 {
     let symbol = format!("{}USDT", config.asset_label().to_uppercase());
     let url = format!(
         "https://api.binance.com/api/v3/ticker/price?symbol={}",
@@ -149,7 +194,7 @@ async fn fetch_binance_price(client: &reqwest::Client, config: &Config) -> f64 {
                 .unwrap_or(0.0)
         }
         Err(e) => {
-            eprintln!("[REC] Failed to fetch Binance price for strike: {}", e);
+            eprintln!("[REC] Spot ticker fallback failed: {}", e);
             0.0
         }
     }

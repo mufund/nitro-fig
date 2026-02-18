@@ -149,7 +149,7 @@ pub async fn run_engine(
                 evaluate_filtered(&binance_strategies, &state, now_ms, &mut signals_buf);
 
                 let elapsed_ms = now_ms - state.info.start_ms;
-                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                if elapsed_ms >= 0 && elapsed_ms <= config.interval.open_window_ms() {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signals_buf.extend(open_buf.drain(..));
                 }
@@ -187,7 +187,7 @@ pub async fn run_engine(
                 evaluate_filtered(&pm_strategies, &state, now_ms, &mut signals_buf);
 
                 let elapsed_ms = now_ms - state.info.start_ms;
-                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                if elapsed_ms >= 0 && elapsed_ms <= config.interval.open_window_ms() {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signals_buf.extend(open_buf.drain(..));
                 }
@@ -218,7 +218,7 @@ pub async fn run_engine(
                 evaluate_filtered(&pm_strategies, &state, now_ms, &mut signals_buf);
 
                 let elapsed_ms = now_ms - state.info.start_ms;
-                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                if elapsed_ms >= 0 && elapsed_ms <= config.interval.open_window_ms() {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signals_buf.extend(open_buf.drain(..));
                 }
@@ -316,7 +316,8 @@ pub async fn run_engine(
             }
         }
 
-        if now_ms >= state.info.end_ms + 10_000 {
+        let post_buffer_ms = config.interval.post_end_buffer_secs() * 1000;
+        if now_ms >= state.info.end_ms + post_buffer_ms {
             break;
         }
     }
@@ -445,8 +446,11 @@ fn log_strategy_diagnostics(state: &MarketState, now_ms: i64, house_side: &Optio
     } else {
         (state.up_ask, "Up")
     };
+    let market_dur_s = (state.info.end_ms - state.info.start_ms) as f64 / 1000.0;
+    let lp_min_tau = (market_dur_s * 0.20).max(60.0);
+    let lp_tau_msg = format!("tau<{:.0}", lp_min_tau);
     let lp_gate = if regime == Regime::Trend { "regime=Trend" }
-        else if tau < 60.0 { "tau<60" }
+        else if tau < lp_min_tau { &lp_tau_msg }
         else if z_abs < 1.5 { "z<1.5" }
         else if lp_ask <= 0.0 || lp_ask >= 0.25 { "ask>=0.25" }
         else { "PASS" };
@@ -455,12 +459,14 @@ fn log_strategy_diagnostics(state: &MarketState, now_ms: i64, house_side: &Optio
         z_abs, lp_side, lp_ask, regime, lp_gate,
     );
 
-    // strike_misalign: only first 15s
+    // strike_misalign: only in open window (interval-dependent)
     let elapsed_ms = now_ms - state.info.start_ms;
-    let sm_gate = if elapsed_ms > 15_000 { "past_15s" } else { "in_window" };
+    let window_s = (state.info.end_ms - state.info.start_ms) / 1000;
+    // Approximate: open window is ~5% of total interval, capped per config
+    let sm_gate = if elapsed_ms > 15_000 { "past_open_window" } else { "in_window" };
     eprintln!(
-        "[DIAG]   strike_misalign: elapsed={}ms → {}",
-        elapsed_ms, sm_gate,
+        "[DIAG]   strike_misalign: elapsed={}ms window={}s → {}",
+        elapsed_ms, window_s, sm_gate,
     );
 }
 

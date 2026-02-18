@@ -30,6 +30,64 @@ fn main() {
     eprintln!("║  Data: {:<42} ║", data_dir);
     eprintln!("╚══════════════════════════════════════════════════╝");
 
+    // Detect multi-market directory: if data_dir has subdirectories with market_info.txt,
+    // iterate over each one. Otherwise treat data_dir as a single market.
+    let market_dirs = detect_market_dirs(data_dir);
+
+    let mut all_results: Vec<(Vec<BacktestEntry>, bool, u64, String)> = Vec::new();
+
+    for (i, mdir) in market_dirs.iter().enumerate() {
+        if market_dirs.len() > 1 {
+            eprintln!("\n{}", "=".repeat(60));
+            eprintln!("  Market {}/{}: {}", i + 1, market_dirs.len(), mdir);
+            eprintln!("{}", "=".repeat(60));
+        }
+        let (results, outcome_up, total_evals) = run_single_market(mdir);
+        let slug = std::path::Path::new(mdir)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| mdir.to_string());
+        all_results.push((results, outcome_up, total_evals, slug));
+    }
+
+    // Print combined summary if multi-market
+    if all_results.len() > 1 {
+        print_combined_results(&all_results);
+    }
+}
+
+/// Detect whether `data_dir` is a single market or a directory of markets.
+fn detect_market_dirs(data_dir: &str) -> Vec<String> {
+    // If data_dir itself has market_info.txt, it's a single market
+    let info_path = format!("{}/market_info.txt", data_dir);
+    if std::path::Path::new(&info_path).exists() {
+        return vec![data_dir.to_string()];
+    }
+
+    // Otherwise scan subdirectories for market_info.txt
+    let mut dirs: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let sub_info = path.join("market_info.txt");
+                if sub_info.exists() {
+                    dirs.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    dirs.sort(); // alphabetical order
+    if dirs.is_empty() {
+        // Fall back to treating it as single market (will error with useful message)
+        vec![data_dir.to_string()]
+    } else {
+        eprintln!("Found {} markets in {}", dirs.len(), data_dir);
+        dirs
+    }
+}
+
+fn run_single_market(data_dir: &str) -> (Vec<BacktestEntry>, bool, u64) {
     // Load CSVs
     let binance_trades = load_binance_csv(&format!("{}/binance.csv", data_dir));
     let pm_quotes = load_polymarket_csv(&format!("{}/polymarket.csv", data_dir));
@@ -63,7 +121,7 @@ fn main() {
     eprintln!("Strike: ${:.2}{}", strike, if market_info.strike > 0.0 { " (from market_info)" } else { " (from first Binance trade)" });
 
     // Initialize MarketState with persistent BinanceState
-    let oracle = OracleBasis::new(0.0, 2.0); // default oracle params for backtest
+    let oracle = OracleBasis::new(0.0, 2.0);
     let bs = BinanceState::new(0.94, 10, 0.30, 60_000, 30_000);
     let mut state = MarketState::new(
         MarketInfo {
@@ -109,6 +167,8 @@ fn main() {
 
     eprintln!("\n--- Running strategies ---\n");
 
+    let open_window_ms = ((market_info.end_ms - market_info.start_ms) / 20).clamp(15_000, 300_000);
+
     for event in &events {
         match event {
             Event::Binance(t) => {
@@ -127,12 +187,10 @@ fn main() {
                 total_evals += 1;
                 let now_ms = t.ts_ms;
 
-                // Evaluate Binance-triggered strategies
                 evaluate_filtered(&binance_strategies, &state, now_ms, &mut signal_buf);
 
-                // MarketOpen strategies in first 15s
                 let elapsed_ms = now_ms - market_info.start_ms;
-                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                if elapsed_ms >= 0 && elapsed_ms <= open_window_ms {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signal_buf.extend(open_buf.drain(..));
                 }
@@ -150,9 +208,6 @@ fn main() {
                 }
             }
             Event::Polymarket(q) => {
-                // Filter out book-edge placeholder values (0.01 bid / 0.99 ask).
-                // Each best_bid_ask WS event only updates one token — the other shows
-                // book extremes (0.01/0.99), which are not real quotes.
                 let is_real_bid = |v: f64| v > 0.02;
                 let is_real_ask = |v: f64| v > 0.0 && v < 0.98;
                 state.on_polymarket_quote(PolymarketQuote {
@@ -171,12 +226,10 @@ fn main() {
                 total_evals += 1;
                 let now_ms = q.ts_ms;
 
-                // Evaluate PM-triggered strategies
                 evaluate_filtered(&pm_strategies, &state, now_ms, &mut signal_buf);
 
-                // MarketOpen strategies in first 15s
                 let elapsed_ms = now_ms - market_info.start_ms;
-                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                if elapsed_ms >= 0 && elapsed_ms <= open_window_ms {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signal_buf.extend(open_buf.drain(..));
                 }
@@ -208,11 +261,10 @@ fn main() {
                 total_evals += 1;
                 let now_ms = b.ts_ms;
 
-                // Book updates trigger PM strategies (same as live engine)
                 evaluate_filtered(&pm_strategies, &state, now_ms, &mut signal_buf);
 
                 let elapsed_ms = now_ms - market_info.start_ms;
-                if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+                if elapsed_ms >= 0 && elapsed_ms <= open_window_ms {
                     evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
                     signal_buf.extend(open_buf.drain(..));
                 }
@@ -242,8 +294,10 @@ fn main() {
         if outcome_up { "UP wins" } else { "DOWN wins" }
     );
 
-    // Print results
+    // Print per-market results
     print_results(&results, outcome_up, total_evals);
+
+    (results, outcome_up, total_evals)
 }
 
 // ─── Results Printer ───
@@ -319,6 +373,93 @@ fn print_results(results: &[BacktestEntry], outcome_up: bool, total_evals: u64) 
             avg_edge,
         );
     }
+}
+
+// ─── Combined Multi-Market Results ───
+
+fn print_combined_results(all_results: &[(Vec<BacktestEntry>, bool, u64, String)]) {
+    eprintln!("\n{}", "=".repeat(90));
+    eprintln!("  COMBINED RESULTS ({} markets)", all_results.len());
+    eprintln!("{}", "=".repeat(90));
+
+    let mut total_signals = 0usize;
+    let mut total_correct = 0usize;
+    let mut total_invested = 0.0_f64;
+    let mut total_profit = 0.0_f64;
+    let mut total_evals = 0u64;
+    let bankroll: f64 = std::env::var("BANKROLL").ok().and_then(|s| s.parse().ok()).unwrap_or(1000.0);
+    let max_exposure: f64 = std::env::var("MAX_EXPOSURE_FRAC").ok().and_then(|s| s.parse().ok()).unwrap_or(0.15);
+    let bet_size = bankroll * max_exposure;
+
+    // Per-strategy aggregation across all markets
+    let mut by_strategy: std::collections::HashMap<String, (usize, usize, f64, f64, f64)> =
+        std::collections::HashMap::new(); // (signals, correct, invested, profit, edge_sum)
+
+    for (results, outcome_up, evals, slug) in all_results {
+        let mut market_signals = 0;
+        let mut market_correct = 0;
+        let mut market_invested = 0.0;
+        let mut market_profit = 0.0;
+
+        for entry in results {
+            let is_up = entry.side == "UP";
+            let correct = (is_up && *outcome_up) || (!is_up && !*outcome_up);
+            let profit = if correct {
+                1.0 - entry.market_price
+            } else {
+                -entry.market_price
+            };
+
+            market_signals += 1;
+            if correct { market_correct += 1; }
+            market_invested += entry.market_price;
+            market_profit += profit;
+
+            let strat = by_strategy.entry(entry.strategy.clone()).or_insert((0, 0, 0.0, 0.0, 0.0));
+            strat.0 += 1;
+            if correct { strat.1 += 1; }
+            strat.2 += entry.market_price;
+            strat.3 += profit;
+            strat.4 += entry.edge;
+        }
+
+        total_signals += market_signals;
+        total_correct += market_correct;
+        total_invested += market_invested;
+        total_profit += market_profit;
+        total_evals += evals;
+
+        let pnl = market_profit * bet_size;
+        eprintln!(
+            "  {} | {} signals, {}/{} correct, PnL ${:.2}",
+            slug, market_signals, market_correct, market_signals, pnl,
+        );
+    }
+
+    eprintln!("\n{:-<90}", "");
+    eprintln!("  Strategy Totals:");
+
+    let mut strat_names: Vec<&String> = by_strategy.keys().collect();
+    strat_names.sort();
+
+    for name in &strat_names {
+        let (signals, correct, invested, profit, edge_sum) = by_strategy[*name];
+        let pnl = profit * bet_size;
+        let avg_edge = if signals > 0 { edge_sum / signals as f64 } else { 0.0 };
+        eprintln!(
+            "    {:<20} {:>3} signals, {}/{} correct, PnL ${:>8.2}, avg_edge={:.3}",
+            name, signals, correct, signals, pnl, avg_edge,
+        );
+    }
+
+    let total_pnl = total_profit * bet_size;
+    let win_rate = if total_signals > 0 { total_correct as f64 / total_signals as f64 * 100.0 } else { 0.0 };
+
+    eprintln!("\n{:-<90}", "");
+    eprintln!("  TOTAL: {} signals, {}/{} correct ({:.0}% win rate)", total_signals, total_correct, total_signals, win_rate);
+    eprintln!("  TOTAL PnL: ${:.2} (bankroll=${:.0}, bet=${:.0})", total_pnl, bankroll, bet_size);
+    eprintln!("  Total evaluations: {}", total_evals);
+    eprintln!("{:-<90}", "");
 }
 
 // ─── Backtest-only types (CSV row structs — no strategy logic) ───

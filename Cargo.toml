@@ -31,6 +31,10 @@ path = "src/bin/analyzer.rs"
 name = "replay"
 path = "src/bin/replay/main.rs"
 
+[[bin]]
+name = "backtest"
+path = "src/bin/backtest/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

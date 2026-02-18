@@ -97,11 +97,14 @@ fn evaluate_event(
     open_buf: &mut Vec<Signal>,
 ) {
     let now_ms = event.ts_ms();
+    // Open window scales with market duration: ~5% of window, capped [15s, 300s]
+    let market_duration_ms = state.info.end_ms - state.info.start_ms;
+    let open_window_ms = (market_duration_ms / 20).clamp(15_000, 300_000);
     match event {
         ReplayEvent::Binance { .. } => {
             evaluate_filtered(&strats.binance_strategies(), state, now_ms, signal_buf);
             let elapsed_ms = now_ms - start_ms;
-            if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+            if elapsed_ms >= 0 && elapsed_ms <= open_window_ms {
                 evaluate_filtered(&strats.open_strategies(), state, now_ms, open_buf);
                 signal_buf.extend(open_buf.drain(..));
             }
@@ -109,7 +112,7 @@ fn evaluate_event(
         ReplayEvent::Polymarket { .. } | ReplayEvent::Book { .. } => {
             evaluate_filtered(&strats.pm_strategies(), state, now_ms, signal_buf);
             let elapsed_ms = now_ms - start_ms;
-            if elapsed_ms >= 0 && elapsed_ms <= 15_000 {
+            if elapsed_ms >= 0 && elapsed_ms <= open_window_ms {
                 evaluate_filtered(&strats.open_strategies(), state, now_ms, open_buf);
                 signal_buf.extend(open_buf.drain(..));
             }

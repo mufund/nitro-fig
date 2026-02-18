@@ -76,24 +76,29 @@ async fn main() {
         };
 
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let wait_ms = (market.start_ms - 10_000 - now_ms).max(0);
+        let pre_wake_ms = config.interval.pre_wake_secs() * 1000;
+        let wait_ms = (market.start_ms - pre_wake_ms - now_ms).max(0);
         eprintln!(
-            "[MAIN] Next market: {} | starts in {:.0}s | UP={} DOWN={}",
+            "[MAIN] Next market: {} | starts in {:.0}s | pre_wake={}s | UP={} DOWN={}",
             market.slug,
             wait_ms as f64 / 1000.0,
+            config.interval.pre_wake_secs(),
             &market.up_token_id[..8.min(market.up_token_id.len())],
             &market.down_token_id[..8.min(market.down_token_id.len())],
         );
 
-        // 2. Wait until 10s before market start
+        // 2. Wait until pre_wake_secs before market start
         if wait_ms > 0 {
             tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms as u64)).await;
         }
 
-        // 3. Set strike from latest Binance price (instant — no waiting)
+        // 3. Set strike from Binance candle open (klines API for all intervals).
+        //    The candle open is the correct reference price per Polymarket resolution rules.
+        //    For short intervals (5m) this is ~identical to a spot snapshot.
+        //    For long intervals (1h, 4h) this is the candle open at the boundary.
         let mut market = market;
-        market.strike = *price_rx.borrow();
-        eprintln!("[MAIN] Strike set: ${:.2}", market.strike);
+        market.strike = fetch_binance_candle_open(&http, &config).await;
+        eprintln!("[MAIN] Strike set (candle open): ${:.2}", market.strike);
 
         // 4. Create per-market channels
         let (feed_tx, feed_rx) = mpsc::channel::<FeedEvent>(4096);
@@ -158,5 +163,75 @@ async fn main() {
         telem_handle.abort();
 
         eprintln!("[MAIN] Market {} completed. Discovering next...\n", market.slug);
+    }
+}
+
+/// Fetch the Binance candle OPEN price for the current interval.
+///
+/// Uses the klines REST API: GET /api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1
+/// The open price of the most recent candle is the correct strike reference
+/// per Polymarket resolution rules (all intervals).
+///
+/// Fallback: if klines fails, uses spot ticker price (acceptable for 5m/15m
+/// where candle open ≈ spot, but logged as a warning for longer intervals).
+async fn fetch_binance_candle_open(client: &reqwest::Client, config: &Config) -> f64 {
+    let symbol = format!("{}USDT", config.asset_label().to_uppercase());
+    let kline_interval = config.interval.binance_kline_label();
+    let url = format!(
+        "https://api.binance.com/api/v3/klines?symbol={}&interval={}&limit=1",
+        symbol, kline_interval
+    );
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let text = resp.text().await.unwrap_or_default();
+            // klines response: [[open_time, open, high, low, close, volume, ...], ...]
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(candle) = v.as_array().and_then(|a| a.first()) {
+                    if let Some(open_str) = candle.get(1).and_then(|o| o.as_str()) {
+                        if let Ok(open_price) = open_str.parse::<f64>() {
+                            eprintln!(
+                                "[MAIN] Binance kline {} open=${:.2} (interval={})",
+                                symbol, open_price, kline_interval
+                            );
+                            return open_price;
+                        }
+                    }
+                }
+            }
+            eprintln!("[MAIN] Failed to parse klines response, falling back to spot");
+        }
+        Err(e) => {
+            eprintln!("[MAIN] Klines fetch failed: {}, falling back to spot", e);
+        }
+    }
+
+    // Fallback: spot ticker
+    if config.interval.window_secs() > 900 {
+        eprintln!("[WARN] Using spot price as strike for {}+ interval — candle open preferred", config.interval.label());
+    }
+    fetch_binance_spot(client, config).await
+}
+
+/// Fallback: fetch current BTC spot price from Binance REST.
+async fn fetch_binance_spot(client: &reqwest::Client, config: &Config) -> f64 {
+    let symbol = format!("{}USDT", config.asset_label().to_uppercase());
+    let url = format!(
+        "https://api.binance.com/api/v3/ticker/price?symbol={}",
+        symbol
+    );
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let text = resp.text().await.unwrap_or_default();
+            let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+            v["price"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0)
+        }
+        Err(e) => {
+            eprintln!("[MAIN] Spot ticker fallback failed: {}", e);
+            0.0
+        }
     }
 }

@@ -41,6 +41,77 @@ impl Interval {
             Interval::H4 => "4h",
         }
     }
+
+    /// Binance klines API interval string: "5m", "15m", "1h", "4h".
+    pub fn binance_kline_label(&self) -> &'static str {
+        match self {
+            Interval::M5 => "5m",
+            Interval::M15 => "15m",
+            Interval::H1 => "1h",
+            Interval::H4 => "4h",
+        }
+    }
+
+    /// How many seconds before market start to wake up.
+    /// Short intervals wake early (10s), long intervals wake earlier (30s for 1h, 60s for 4h).
+    pub fn pre_wake_secs(&self) -> i64 {
+        match self {
+            Interval::M5 => 10,
+            Interval::M15 => 15,
+            Interval::H1 => 30,
+            Interval::H4 => 60,
+        }
+    }
+
+    /// How many seconds to wait after market end before settling.
+    /// Longer intervals get more buffer for Binance candle close to finalize.
+    pub fn post_end_buffer_secs(&self) -> i64 {
+        match self {
+            Interval::M5 => 10,
+            Interval::M15 => 10,
+            Interval::H1 => 15,
+            Interval::H4 => 30,
+        }
+    }
+
+    /// Open strategies (strike_misalign) window in milliseconds.
+    /// Scales with interval: 15s for 5m, 30s for 15m, 120s for 1h, 300s for 4h.
+    pub fn open_window_ms(&self) -> i64 {
+        match self {
+            Interval::M5 => 15_000,
+            Interval::M15 => 30_000,
+            Interval::H1 => 120_000,
+            Interval::H4 => 300_000,
+        }
+    }
+
+    /// Compute the candle boundary (start) timestamp in milliseconds for the
+    /// candle that contains `now_ms`. E.g. for H1, if now_ms is 2:03:15,
+    /// returns 2:00:00 in ms.
+    pub fn candle_boundary_ms(&self, now_ms: i64) -> i64 {
+        let ws_ms = self.window_ms();
+        (now_ms / ws_ms) * ws_ms
+    }
+
+    /// Recorder: how many seconds after market end to keep recording.
+    pub fn recorder_post_end_secs(&self) -> i64 {
+        match self {
+            Interval::M5 => 30,
+            Interval::M15 => 30,
+            Interval::H1 => 60,
+            Interval::H4 => 120,
+        }
+    }
+
+    /// Recorder: how many seconds before market start to wake up and start recording.
+    pub fn recorder_pre_wake_secs(&self) -> i64 {
+        match self {
+            Interval::M5 => 5,
+            Interval::M15 => 10,
+            Interval::H1 => 20,
+            Interval::H4 => 30,
+        }
+    }
 }
 
 /// Configuration loaded from environment variables.

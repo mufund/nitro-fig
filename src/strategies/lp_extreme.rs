@@ -8,12 +8,11 @@ use crate::types::{EvalTrigger, Side, Signal};
 ///
 /// At P near 0 or 1, market makers retreat. Provide liquidity
 /// on the losing side, earning wide spreads.
-/// Requires |z| > 1.5, regime != Trend, τ_eff > 60s.
+/// Requires |z| > 1.5, regime != Trend, τ_eff > min_tau (interval-scaled).
 /// Places passive limit orders (is_passive = true).
 pub struct LpExtreme;
 
 const Z_MIN: f64 = 1.5;
-const MIN_TAU_S: f64 = 60.0;
 const MIN_EDGE: f64 = 0.02;
 const MAX_SPREAD: f64 = 0.10;          // don't LP when spread > 10 cents
 const IMBALANCE_LEVELS: usize = 5;
@@ -37,7 +36,11 @@ impl Strategy for LpExtreme {
         }
 
         let tau = state.tau_eff_s(now_ms);
-        if tau < MIN_TAU_S {
+        // Min tau scales with market duration: ~20% of window, floored at 60s.
+        // 5m→60s, 15m→180s, 1h→720s, 4h→2880s
+        let market_duration_s = (state.info.end_ms - state.info.start_ms) as f64 / 1000.0;
+        let min_tau = (market_duration_s * 0.20).max(60.0);
+        if tau < min_tau {
             return None;
         }
 

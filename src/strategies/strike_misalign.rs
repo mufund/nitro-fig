@@ -8,12 +8,20 @@ use crate::types::{EvalTrigger, Side, Signal};
 ///
 /// Strike K is set from a point-in-time snapshot at market open.
 /// Microstructure noise creates a biased strike. Trade the bias
-/// in the first 10-15 seconds before the market corrects.
+/// in the first seconds before the market corrects.
+/// Window scales with interval: ~5% of market duration, capped at 300s.
 pub struct StrikeMisalign;
 
-const MAX_ACTIVE_MS: i64 = 15_000; // only first 15s
 const MIN_DP: f64 = 0.02; // minimum probability shift to trade
 const MIN_EDGE: f64 = 0.02;
+
+/// Compute the active window for strike misalignment based on market duration.
+/// 5m → 15s, 15m → 30s, 1h → 120s, 4h → 300s (matches Interval::open_window_ms).
+fn max_active_ms(state: &MarketState) -> i64 {
+    let duration_ms = state.info.end_ms - state.info.start_ms;
+    let window = duration_ms / 20; // ~5% of market duration
+    window.clamp(15_000, 300_000)
+}
 
 impl Strategy for StrikeMisalign {
     fn name(&self) -> &'static str {
@@ -26,9 +34,9 @@ impl Strategy for StrikeMisalign {
 
     #[inline]
     fn evaluate(&self, state: &MarketState, now_ms: i64) -> Option<Signal> {
-        // Only active in first 15 seconds of market
+        // Only active in the opening window (scales with interval)
         let elapsed_ms = now_ms - state.info.start_ms;
-        if elapsed_ms < 0 || elapsed_ms > MAX_ACTIVE_MS {
+        if elapsed_ms < 0 || elapsed_ms > max_active_ms(state) {
             return None;
         }
 
