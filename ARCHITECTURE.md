@@ -105,7 +105,8 @@ src/
 │   ├── mod.rs
 │   ├── state.rs                   # BinanceState (persistent) + MarketState (per-market)
 │   ├── risk.rs                    # Two-tier risk: per-strategy + portfolio-level
-│   └── runner.rs                  # Core event loop + side coherence + diagnostics
+│   ├── runner.rs                  # Core event loop + LiveSink + diagnostics
+│   └── pipeline.rs                # Shared signal pipeline (deconfliction, sorting, risk, coherence)
 ├── strategies/
 │   ├── mod.rs                     # Strategy trait + evaluate_filtered + kelly()
 │   ├── latency_arb.rs             # S1: Binance→PM latency exploitation
@@ -143,6 +144,11 @@ src/
     │   ├── loader.rs              # CSV loading, event merging
     │   ├── app.rs                 # Core logic: snapshots, navigation, strategy eval
     │   └── render.rs              # All TUI rendering (charts, orderbook, metrics)
+    ├── backtest/                   # Multi-market backtester with 8-tab TUI + text dump
+    │   ├── main.rs                # Entry point, CLI args, keybindings, text dump
+    │   ├── engine.rs              # Market replay, BacktestSink, CSV loaders
+    │   ├── types.rs               # TradeRecord, MarketResult, StrategyStats, BacktestApp (analytics)
+    │   └── render.rs              # 8-tab TUI rendering (summary, strategies, markets, trades, equity, risk, timing, correlation)
     ├── analyzer.rs                # Post-hoc analysis of recorded data
     └── ws_test.rs                 # WebSocket connectivity test
 ```
@@ -182,7 +188,9 @@ open_strategies:     [strike_misalign]
 - `OrderAck` → records fill, updates position
 - `Tick` → stale data detection (5s threshold)
 
-**Side coherence**: First dispatched active order sets `house_side`. Subsequent active orders must agree. Passive signals (lp_extreme) are exempt. See [STRATEGIES.md](STRATEGIES.md) for details.
+**Shared signal pipeline** (`engine/pipeline.rs`): Both the live engine and the backtester process signals through the same `process_signals()` function. This guarantees identical behavior: house-side filtering, deconfliction (scoring conflicting sides by `sum(edge * confidence)`), sorting by score, risk checking, and house-side setting. Engine-specific behavior (async channel dispatch for live, Vec pushes for backtest) is abstracted via the `SignalSink` trait. The live engine implements `LiveSink`, the backtester implements `BacktestSink`.
+
+**Side coherence**: First dispatched active order with confidence >= 0.7 sets `house_side`. Subsequent active orders must agree. Passive signals (lp_extreme) are exempt. Low-confidence signals (e.g. convexity_fade at 0.3-0.65) cannot lock portfolio direction. See [STRATEGIES.md](STRATEGIES.md) for details.
 
 **Settlement**: At market end, determines outcome from final `distance()`, iterates over all fills, computes realized PnL per fill and per strategy.
 
@@ -196,11 +204,11 @@ open_strategies:     [strike_misalign]
 
 | Strategy | Per-trade | Total | Cooldown | Max orders |
 |----------|-----------|-------|----------|------------|
-| latency_arb | 2% | 8% | 200ms | 50 |
-| certainty_capture | 5% | 10% | 1s | 15 |
-| convexity_fade | 0.5% | 3% | 2s | 20 |
-| strike_misalign | 2% | 4% | 500ms | 5 |
-| lp_extreme | 2% | 5% | 2s | 10 |
+| latency_arb | $20 (2%) | $40 (4%) | 60s | 2 |
+| certainty_capture | $30 (3%) | $30 (3%) | 120s | 1 |
+| convexity_fade | $10 (1%) | $20 (2%) | 60s | 2 |
+| strike_misalign | $20 (2%) | $20 (2%) | 15s | 1 |
+| lp_extreme | $20 (2%) | $20 (2%) | 120s | 1 |
 
 **Portfolio-level gates** (checked before per-strategy):
 
@@ -255,7 +263,8 @@ No lock overhead anywhere in the hot path.
 | Binary | Command | Purpose |
 |---|---|---|
 | `bot` | `cargo run --release --bin bot` | Live trading / dry-run |
-| `backtester` | `cargo run --release --bin backtester [dir]` | Replay CSVs through strategies |
+| `backtest` | `cargo run --release --bin backtest -- logs/1h` | Multi-market backtester with 8-tab TUI dashboard (or `--dump` for text) |
+| `backtester` | `cargo run --release --bin backtester [dir]` | Replay CSVs through strategies (legacy) |
 | `recorder` | `cargo run --release --bin recorder -- --cycles N` | Record live feeds to CSV |
 | `replay` | `cargo run --release --bin replay -- <data_dir>` | Interactive TUI: charts, orderbook, strategy signals |
 | `analyzer` | `cargo run --release --bin analyzer` | Post-hoc data analysis |

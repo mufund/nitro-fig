@@ -15,6 +15,7 @@ Trades BTC/ETH/SOL/XRP up/down 5-minute binary markets on Polymarket using Binan
 - **Side coherence** -- active strategies agree on a directional house view; passive LP is exempt
 - **Two-tier risk** -- per-strategy limits (size, cooldown, order caps) plus portfolio-level exposure and loss halts
 - **Interactive replay TUI** -- step through recorded market data tick-by-tick with live orderbook, BTC/PM charts, strategy signals, and CSV export
+- **Institutional backtest TUI** -- 8-tab analytics dashboard: summary, strategies, markets, trades, equity, risk, timing, correlation matrix
 
 ## Quick Start
 
@@ -32,6 +33,12 @@ cargo run --release --bin recorder -- --cycles 5
 
 # Replay recorded data in the TUI
 cargo run --release --bin replay -- logs/5m/btc-updown-5m-1771320600
+
+# Backtest on recorded 1-hour markets (interactive TUI)
+cargo run --release --bin backtest -- logs/1h
+
+# Backtest with text dump (no TUI)
+cargo run --release --bin backtest -- --dump logs/1h
 ```
 
 ## Documentation
@@ -48,7 +55,8 @@ cargo run --release --bin replay -- logs/5m/btc-updown-5m-1771320600
 | Binary | Command | Purpose |
 |--------|---------|---------|
 | `bot` | `cargo run --release --bin bot` | Live trading / dry-run |
-| `backtester` | `cargo run --release --bin backtester [dir]` | Replay recorded CSVs through strategies, print signal/order summary |
+| `backtest` | `cargo run --release --bin backtest -- logs/1h` | Multi-market backtester with 8-tab TUI dashboard (or `--dump` for text mode) |
+| `backtester` | `cargo run --release --bin backtester [dir]` | Replay recorded CSVs through strategies, print signal/order summary (legacy) |
 | `recorder` | `cargo run --release --bin recorder -- --cycles N` | Record live Binance + Polymarket feeds to CSV (default: infinite cycles) |
 | `replay` | `cargo run --release --bin replay -- <data_dir>` | Interactive TUI: step through recorded data with charts and strategy eval |
 | `analyzer` | `cargo run --release --bin analyzer` | Post-hoc analysis of recorded data |
@@ -85,6 +93,44 @@ The replay binary provides an interactive terminal interface for debugging and a
 
 Backward navigation uses periodic `MarketState` snapshots (every 1000 events) to avoid replaying from the start.
 
+## Backtest TUI
+
+The backtest binary provides an institutional-grade analytics dashboard with 8 tabs, supporting both interactive TUI and text dump modes.
+
+```bash
+# Interactive TUI (default)
+cargo run --release --bin backtest -- logs/1h
+
+# Text dump to stdout
+cargo run --release --bin backtest -- --dump logs/1h
+```
+
+**Tabs:**
+
+| # | Tab | Contents |
+|---|-----|----------|
+| 1 | Summary | PnL, ROI, Sharpe/Sortino/Calmar, drawdown, win/loss stats, directional analysis, strategy PnL bars, edge capture ratios, per-trade equity curve |
+| 2 | Strategies | 15-column comparison table, per-market breakdown, strategy equity curves, detailed metrics (best/worst, streaks, avg size/price, edge std) |
+| 3 | Markets | Scrollable market table with outcome, WR, PnL, strategy breakdown. Press Enter to drill-down into a single market (trade table + equity chart) |
+| 4 | Trades | All trades with 15 columns, filterable by strategy with [f], scrollable |
+| 5 | Equity | Per-trade equity curve with per-strategy overlays, per-market PnL sparkline, rolling 20-trade Sharpe and win rate chart |
+| 6 | Risk | Drawdown chart, risk metrics panel (MDD, duration, recovery factor, Kelly), PnL distribution histogram, edge distribution histogram |
+| 7 | Timing | PnL by time-remaining buckets, win rate chart, edge/confidence/size analysis per bucket |
+| 8 | Correl | Strategy correlation matrix (per-market PnL), diversification score, strongest pairs with visual bars |
+
+**Keybindings:**
+
+| Key | Action |
+|-----|--------|
+| `1`-`8` / `Tab` | Switch tab |
+| `j` / `k` / `Up` / `Down` | Scroll |
+| `PgUp` / `PgDn` | Page scroll |
+| `f` | Filter trades by strategy (Trades tab) |
+| `Enter` | Drill-down into selected market (Markets tab) |
+| `Esc` / `Backspace` | Back from drill-down, or quit |
+| `Home` / `End` | Jump to top / bottom |
+| `q` | Quit |
+
 ## Strategy Configuration
 
 Each strategy can be independently enabled or disabled via environment variables. All active strategies default to **enabled**; set to `0` or `false` to disable.
@@ -105,10 +151,11 @@ STRAT_CONVEXITY_FADE=false STRAT_LATENCY_ARB=0 ./target/release/bot
 
 ## Test Coverage
 
-259 unit tests across all modules including:
+269 unit tests across all modules including:
 - Strategy evaluation correctness and edge cases
 - Risk management gate chain (10 sequential gates)
 - Math library (pricing, EWMA, VWAP, regime, normal distribution)
+- Shared signal pipeline (deconfliction, sorting, house-side coherence, slippage)
 - Market discovery and orderbook depth
 - End-to-end calculation latency benchmarks (<1us per strategy evaluation)
 

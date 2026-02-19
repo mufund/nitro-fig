@@ -3,8 +3,9 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
+use crate::engine::pipeline::{self, ProcessConfig, SignalSink};
 use crate::engine::risk::StrategyRiskManager;
-use crate::engine::state::{BinanceState, MarketState, StrategyStats};
+use crate::engine::state::{BinanceState, MarketState};
 use crate::math::oracle::OracleBasis;
 use crate::math::pricing::z_score;
 use crate::math::regime::Regime;
@@ -15,6 +16,86 @@ use crate::strategies::convexity_fade::ConvexityFade;
 use crate::strategies::strike_misalign::StrikeMisalign;
 use crate::strategies::lp_extreme::LpExtreme;
 use crate::types::*;
+
+// ─── LiveSink ──────────────────────────────────────────────────────────────
+
+/// SignalSink implementation for the live engine.
+/// Wraps async channels for order dispatch and telemetry, plus order attribution map.
+struct LiveSink<'a> {
+    order_tx: &'a mpsc::Sender<Order>,
+    telem_tx: &'a mpsc::Sender<TelemetryEvent>,
+    order_strategies: &'a mut HashMap<u64, (&'static str, Side)>,
+    /// Per-batch eval latency (for telemetry records).
+    eval_us: u64,
+    dispatched: bool,
+}
+
+impl<'a> LiveSink<'a> {
+    fn new(
+        order_tx: &'a mpsc::Sender<Order>,
+        telem_tx: &'a mpsc::Sender<TelemetryEvent>,
+        order_strategies: &'a mut HashMap<u64, (&'static str, Side)>,
+        eval_us: u64,
+    ) -> Self {
+        Self {
+            order_tx,
+            telem_tx,
+            order_strategies,
+            eval_us,
+            dispatched: false,
+        }
+    }
+}
+
+impl<'a> SignalSink for LiveSink<'a> {
+    fn on_signal(&mut self, sig: &Signal, state: &MarketState, now_ms: i64) {
+        let time_left_s = state.time_left_s(now_ms);
+        let distance = state.distance();
+        let _ = self.telem_tx.try_send(TelemetryEvent::Signal(SignalRecord {
+            ts_ms: now_ms,
+            strategy: sig.strategy.to_string(),
+            side: sig.side,
+            edge: sig.edge,
+            fair_value: sig.fair_value,
+            market_price: sig.market_price,
+            confidence: sig.confidence,
+            size_frac: sig.size_frac,
+            binance_price: state.bn.binance_price,
+            distance,
+            time_left_s,
+            eval_latency_us: self.eval_us,
+            selected: false,
+        }));
+    }
+
+    fn on_order(&mut self, sig: &Signal, order: &Order, state: &MarketState, now_ms: i64) {
+        let time_left_s = state.time_left_s(now_ms);
+
+        self.order_strategies.insert(order.id, (sig.strategy, sig.side));
+
+        let _ = self.telem_tx.try_send(TelemetryEvent::OrderSent(OrderRecord {
+            ts_ms: now_ms,
+            order_id: order.id,
+            side: order.side,
+            price: order.price,
+            size: order.size,
+            strategy: order.strategy.to_string(),
+            edge_at_submit: sig.edge,
+            binance_price: state.bn.binance_price,
+            time_left_s,
+        }));
+
+        eprintln!(
+            "[SIG] {} {:?} edge={:.3} fair={:.3} mkt={:.3} sz=${:.1} {}",
+            sig.strategy, sig.side, sig.edge, sig.fair_value,
+            sig.market_price, order.size,
+            if sig.is_passive { "PASSIVE" } else { "ACTIVE" },
+        );
+
+        let _ = self.order_tx.try_send(order.clone());
+        self.dispatched = true;
+    }
+}
 
 /// Core engine event loop. Single task, owns all state.
 ///
@@ -161,11 +242,21 @@ pub async fn run_engine(
                     latency_us: eval_us,
                 }));
 
-                process_all_signals(
-                    &mut signals_buf, &mut state, &mut risk, &order_tx, &telem_tx,
-                    &mut next_order_id, &mut order_strategies, &mut house_side,
-                    now_ms, eval_us, recv_at,
-                );
+                {
+                    let config = ProcessConfig::live();
+                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                    pipeline::process_signals(
+                        &mut signals_buf, &mut state, &mut risk,
+                        &mut house_side, &mut next_order_id, now_ms,
+                        &config, &mut sink,
+                    );
+                    if sink.dispatched {
+                        let e2e_us = recv_at.elapsed().as_micros() as u64;
+                        let _ = telem_tx.try_send(TelemetryEvent::Latency(LatencyRecord {
+                            ts_ms: now_ms, event: "e2e", latency_us: e2e_us,
+                        }));
+                    }
+                }
             }
 
             FeedEvent::PolymarketQuote(q) => {
@@ -199,11 +290,21 @@ pub async fn run_engine(
                     latency_us: eval_us,
                 }));
 
-                process_all_signals(
-                    &mut signals_buf, &mut state, &mut risk, &order_tx, &telem_tx,
-                    &mut next_order_id, &mut order_strategies, &mut house_side,
-                    now_ms, eval_us, recv_at,
-                );
+                {
+                    let config = ProcessConfig::live();
+                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                    pipeline::process_signals(
+                        &mut signals_buf, &mut state, &mut risk,
+                        &mut house_side, &mut next_order_id, now_ms,
+                        &config, &mut sink,
+                    );
+                    if sink.dispatched {
+                        let e2e_us = recv_at.elapsed().as_micros() as u64;
+                        let _ = telem_tx.try_send(TelemetryEvent::Latency(LatencyRecord {
+                            ts_ms: now_ms, event: "e2e", latency_us: e2e_us,
+                        }));
+                    }
+                }
             }
 
             FeedEvent::PolymarketBook(book) => {
@@ -230,11 +331,21 @@ pub async fn run_engine(
                     latency_us: eval_us,
                 }));
 
-                process_all_signals(
-                    &mut signals_buf, &mut state, &mut risk, &order_tx, &telem_tx,
-                    &mut next_order_id, &mut order_strategies, &mut house_side,
-                    now_ms, eval_us, recv_at,
-                );
+                {
+                    let config = ProcessConfig::live();
+                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                    pipeline::process_signals(
+                        &mut signals_buf, &mut state, &mut risk,
+                        &mut house_side, &mut next_order_id, now_ms,
+                        &config, &mut sink,
+                    );
+                    if sink.dispatched {
+                        let e2e_us = recv_at.elapsed().as_micros() as u64;
+                        let _ = telem_tx.try_send(TelemetryEvent::Latency(LatencyRecord {
+                            ts_ms: now_ms, event: "e2e", latency_us: e2e_us,
+                        }));
+                    }
+                }
             }
 
             FeedEvent::CrossMarketQuote(cm) => {
@@ -470,142 +581,3 @@ fn log_strategy_diagnostics(state: &MarketState, now_ms: i64, house_side: &Optio
     );
 }
 
-/// Process ALL signals through risk, dispatch every order that passes.
-/// Side coherence: active signals filtered by house_side.
-/// Passive signals (lp_extreme) are exempt from house_side — they
-/// intentionally LP on the losing side.
-#[inline]
-fn process_all_signals(
-    signals: &mut Vec<Signal>,
-    state: &mut MarketState,
-    risk: &mut StrategyRiskManager,
-    order_tx: &mpsc::Sender<Order>,
-    telem_tx: &mpsc::Sender<TelemetryEvent>,
-    next_order_id: &mut u64,
-    order_strategies: &mut HashMap<u64, (&'static str, Side)>,
-    house_side: &mut Option<Side>,
-    now_ms: i64,
-    eval_us: u64,
-    recv_at: Instant,
-) {
-    if signals.is_empty() {
-        return;
-    }
-
-    // ── Side coherence (active signals only) ──
-    // Passive signals (lp_extreme) are exempt — they intentionally take the opposite side
-    if let Some(hs) = *house_side {
-        signals.retain(|s| s.is_passive || s.side == hs);
-        if signals.is_empty() {
-            return;
-        }
-    }
-    // If no house view and ACTIVE signals disagree, pick dominant active side
-    else {
-        let active_signals: Vec<&Signal> = signals.iter().filter(|s| !s.is_passive).collect();
-        if active_signals.len() > 1 {
-            let (mut up_score, mut down_score) = (0.0_f64, 0.0_f64);
-            for s in &active_signals {
-                match s.side {
-                    Side::Up => up_score += s.edge * s.confidence,
-                    Side::Down => down_score += s.edge * s.confidence,
-                }
-            }
-            if up_score > 0.0 && down_score > 0.0 {
-                let dominant = if up_score >= down_score { Side::Up } else { Side::Down };
-                signals.retain(|s| s.is_passive || s.side == dominant);
-            }
-        }
-    }
-
-    // Sort by edge × confidence descending
-    signals.sort_unstable_by(|a, b| {
-        let score_a = a.edge * a.confidence;
-        let score_b = b.edge * b.confidence;
-        score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let time_left_s = state.time_left_s(now_ms);
-    let distance = state.distance();
-    let mut any_dispatched = false;
-
-    // Log ALL signals
-    for sig in signals.iter() {
-        let _ = telem_tx.try_send(TelemetryEvent::Signal(SignalRecord {
-            ts_ms: now_ms,
-            strategy: sig.strategy.to_string(),
-            side: sig.side,
-            edge: sig.edge,
-            fair_value: sig.fair_value,
-            market_price: sig.market_price,
-            confidence: sig.confidence,
-            size_frac: sig.size_frac,
-            binance_price: state.bn.binance_price,
-            distance,
-            time_left_s,
-            eval_latency_us: eval_us,
-            selected: false,
-        }));
-    }
-
-    // Process each signal through risk
-    for sig in signals.iter() {
-        state.total_signals += 1;
-        state.strategy_stats
-            .entry(sig.strategy)
-            .or_insert_with(StrategyStats::new)
-            .signals += 1;
-
-        if let Some(order) = risk.check_strategy(sig, state, *next_order_id, now_ms) {
-            state.total_orders += 1;
-
-            let strat_stats = state.strategy_stats
-                .entry(sig.strategy)
-                .or_insert_with(StrategyStats::new);
-            strat_stats.orders += 1;
-            strat_stats.total_edge += sig.edge;
-
-            order_strategies.insert(order.id, (sig.strategy, sig.side));
-
-            // Set house view on first ACTIVE dispatch only
-            if house_side.is_none() && !sig.is_passive {
-                *house_side = Some(sig.side);
-            }
-
-            let _ = telem_tx.try_send(TelemetryEvent::OrderSent(OrderRecord {
-                ts_ms: now_ms,
-                order_id: order.id,
-                side: order.side,
-                price: order.price,
-                size: order.size,
-                strategy: order.strategy.to_string(),
-                edge_at_submit: sig.edge,
-                binance_price: state.bn.binance_price,
-                time_left_s,
-            }));
-
-            risk.on_order_sent(sig.strategy, now_ms, order.size);
-            state.position.on_order_sent();
-
-            eprintln!(
-                "[SIG] {} {:?} edge={:.3} fair={:.3} mkt={:.3} sz=${:.1} {}",
-                sig.strategy, sig.side, sig.edge, sig.fair_value,
-                sig.market_price, order.size,
-                if sig.is_passive { "PASSIVE" } else { "ACTIVE" },
-            );
-
-            let _ = order_tx.try_send(order);
-            *next_order_id += 1;
-            any_dispatched = true;
-        }
-    }
-
-    if any_dispatched {
-        let e2e_us = recv_at.elapsed().as_micros() as u64;
-        let _ = telem_tx.try_send(TelemetryEvent::Latency(LatencyRecord {
-            ts_ms: now_ms,
-            event: "e2e",
-            latency_us: e2e_us,
-        }));
-    }
-}

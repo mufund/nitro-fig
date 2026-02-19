@@ -72,10 +72,10 @@ The minimum edge of 3 cents accounts for Polymarket's fee structure. Below this 
 
 | Parameter | Value |
 |-----------|-------|
-| Per-trade size cap | 2% of bankroll |
-| Total exposure cap | 8% of bankroll |
-| Cooldown | 200ms |
-| Max orders per market | 50 |
+| Per-trade size cap | $20 (2%) |
+| Total exposure cap | $40 (4%) |
+| Cooldown | 60s |
+| Max orders per market | 2 |
 
 ---
 
@@ -109,7 +109,7 @@ When BTC is far from the strike with time running out, the binary outcome become
    ```
    |z| > 3.0  -> max 5% of bankroll (near-certain, max conviction)
    |z| > 2.5  -> max 3% of bankroll
-   |z| > 1.5  -> max 1% of bankroll
+   |z| > 1.5  -> max 2% of bankroll
    ```
    This naturally increases position size as the outcome becomes more deterministic.
 
@@ -127,10 +127,10 @@ The z-score intentionally omits the drift term (`-sigma^2*tau/2`) that appears i
 
 | Parameter | Value |
 |-----------|-------|
-| Per-trade size cap | 5% of bankroll (tiered) |
-| Total exposure cap | 10% of bankroll |
-| Cooldown | 1000ms |
-| Max orders per market | 15 |
+| Per-trade size cap | $30 (3%, tiered by z) |
+| Total exposure cap | $30 (3%) |
+| Cooldown | 120s |
+| Max orders per market | 1 |
 
 ---
 
@@ -181,10 +181,16 @@ This is enormous. In equity options, a similar ATM gamma causes "pin risk." In b
 
 5. **Select better side**: Whichever side has higher edge (must be >= 2 cents).
 
-6. **Sizing**: Half-Kelly capped at 0.5% of bankroll — deliberately small because:
+6. **Confidence**: Dynamic, based on edge relative to expected probability swing:
+   ```
+   confidence = (edge / expected_swing).clamp(0.3, 0.65)
+   ```
+   When `expected_swing` is zero or negative, defaults to 0.3. This means convexity_fade confidence is always below the 0.7 threshold for setting `house_side`, so it can never lock the portfolio direction.
+
+7. **Sizing**: Half-Kelly capped at 0.5% of bankroll — deliberately small because:
    - This is a mean-reversion bet, not a directional conviction
    - High frequency compensates (fires many times per market)
-   - Individual trades have lower confidence (0.4 fixed)
+   - Individual trades have moderate confidence (0.3-0.65 dynamic)
 
 ### Regime Classifier
 
@@ -215,10 +221,10 @@ This represents how much the binary price should bounce in the next `dt` seconds
 
 | Parameter | Value |
 |-----------|-------|
-| Per-trade size cap | 0.5% of bankroll |
-| Total exposure cap | 3% of bankroll |
-| Cooldown | 2000ms |
-| Max orders per market | 20 |
+| Per-trade size cap | $10 (1%) |
+| Total exposure cap | $20 (2%) |
+| Cooldown | 60s |
+| Max orders per market | 2 |
 
 ---
 
@@ -276,10 +282,10 @@ The formula `phi(d2) / (S * sigma * sqrt(tau))` is the binary option delta. It m
 
 | Parameter | Value |
 |-----------|-------|
-| Per-trade size cap | 2% of bankroll |
-| Total exposure cap | 4% of bankroll |
-| Cooldown | 500ms |
-| Max orders per market | 5 |
+| Per-trade size cap | $20 (2%) |
+| Total exposure cap | $20 (2%) |
+| Cooldown | 15s |
+| Max orders per market | 1 |
 
 ---
 
@@ -352,10 +358,10 @@ This confluence happens perhaps a few times per hour. The strategy compensates w
 
 | Parameter | Value |
 |-----------|-------|
-| Per-trade size cap | 2% of bankroll |
-| Total exposure cap | 5% of bankroll |
-| Cooldown | 2000ms |
-| Max orders per market | 10 |
+| Per-trade size cap | $20 (2%) |
+| Total exposure cap | $20 (2%) |
+| Cooldown | 120s |
+| Max orders per market | 1 |
 
 ---
 
@@ -402,13 +408,13 @@ At startup, the engine logs which strategies are active:
 
 The engine enforces directional coherence across active strategies within a single market:
 
-1. **First active order sets the house view**. If latency_arb fires first with side=Down, then `house_side = Down`.
+1. **First high-confidence active order sets the house view**. Only signals with `confidence >= 0.7` can lock the portfolio direction. If latency_arb fires first with side=Down and confidence=0.8, then `house_side = Down`. Low-confidence strategies (e.g. convexity_fade at 0.3-0.65) can trade but never set the house direction. This prevents weak signals from locking the portfolio into a losing direction.
 
 2. **Subsequent active orders must agree**. If convexity_fade wants to buy Up after the house is Down, it's filtered out.
 
 3. **Passive signals are exempt**. lp_extreme can buy the opposite side (that's its purpose — LP on the losing side).
 
-4. **When no house view exists and active signals disagree**, the side with the highest `sum(edge * confidence)` wins. Signals for the losing side are dropped.
+4. **When no house view exists and active signals disagree**, the side with the highest `sum(edge * confidence)` wins. Signals for the losing side are dropped entirely (DropMinority deconfliction).
 
 ### Why?
 
@@ -436,11 +442,11 @@ Each strategy has its own size cap on top of Half-Kelly:
 
 | Strategy | Max per trade | Max total | Cooldown | Max orders/market |
 |----------|--------------|-----------|----------|-------------------|
-| latency_arb | 2% | 8% | 200ms | 50 |
-| certainty_capture | 5% | 10% | 1s | 15 |
-| convexity_fade | 0.5% | 3% | 2s | 20 |
-| strike_misalign | 2% | 4% | 500ms | 5 |
-| lp_extreme | 2% | 5% | 2s | 10 |
+| latency_arb | $20 (2%) | $40 (4%) | 60s | 2 |
+| certainty_capture | $30 (3%) | $30 (3%) | 120s | 1 |
+| convexity_fade | $10 (1%) | $20 (2%) | 60s | 2 |
+| strike_misalign | $20 (2%) | $20 (2%) | 15s | 1 |
+| lp_extreme | $20 (2%) | $20 (2%) | 120s | 1 |
 
 ---
 

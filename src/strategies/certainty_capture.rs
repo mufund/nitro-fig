@@ -32,7 +32,7 @@ impl Strategy for CertaintyCapture {
         let s = state.s_est();
         let k = state.info.strike;
         let tau = state.tau_eff_s(now_ms);
-        if tau < 0.5 || s <= 0.0 || k <= 0.0 {
+        if tau < 30.0 || s <= 0.0 || k <= 0.0 {
             return None;
         }
 
@@ -64,13 +64,13 @@ impl Strategy for CertaintyCapture {
             return None;
         }
 
-        // Sizing tiers based on z-score
+        // Sizing tiers based on z-score (higher z = more certain = more size)
         let max_size_frac = if z_abs > 3.0 {
             0.05
         } else if z_abs > 2.5 {
             0.03
         } else {
-            0.01
+            0.02
         };
 
         let confidence = (z_abs / 4.0).clamp(0.5, 0.99);

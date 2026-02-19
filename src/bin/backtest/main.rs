@@ -9,7 +9,7 @@
 //!   - A parent directory containing multiple market subdirectories
 //!
 //! Keys:
-//!   [Tab/1-5] Switch tab  [j/k] Scroll  [f] Filter trades  [q/Esc] Quit
+//!   [Tab/1-8] Switch tab  [j/k] Scroll  [f] Filter trades  [Enter] Drill-down  [Esc/Backspace] Back  [q] Quit
 
 mod engine;
 mod render;
@@ -19,7 +19,7 @@ use std::io::{self, stdout};
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, Event as CEvent, KeyCode, KeyEvent},
+    event::{self, Event as CEvent, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -29,7 +29,8 @@ use crate::types::{BacktestApp, Tab};
 
 fn handle_key(app: &mut BacktestApp, key: KeyEvent) -> bool {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => return true,
+        KeyCode::Char('q') | KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+        KeyCode::Char('q') => return true,
 
         // Tab switching
         KeyCode::Tab => app.tab = app.tab.next(),
@@ -39,6 +40,30 @@ fn handle_key(app: &mut BacktestApp, key: KeyEvent) -> bool {
         KeyCode::Char('3') => app.tab = Tab::Markets,
         KeyCode::Char('4') => app.tab = Tab::Trades,
         KeyCode::Char('5') => app.tab = Tab::Equity,
+        KeyCode::Char('6') => app.tab = Tab::Risk,
+        KeyCode::Char('7') => app.tab = Tab::Timing,
+        KeyCode::Char('8') => app.tab = Tab::Correlation,
+
+        // Esc: back out of drill-down or quit
+        KeyCode::Esc | KeyCode::Backspace => {
+            if app.market_drill_down.is_some() {
+                app.market_drill_down = None;
+            } else {
+                return true;
+            }
+        }
+
+        // Enter: drill-down into selected market
+        KeyCode::Enter => {
+            match app.tab {
+                Tab::Markets => {
+                    if app.market_scroll < app.markets.len() {
+                        app.market_drill_down = Some(app.market_scroll);
+                    }
+                }
+                _ => {}
+            }
+        }
 
         // Scroll down
         KeyCode::Char('j') | KeyCode::Down => {
@@ -132,13 +157,16 @@ fn handle_key(app: &mut BacktestApp, key: KeyEvent) -> bool {
 fn print_dump(app: &BacktestApp) {
     use polymarket_crypto::types::Side;
 
-    println!("╔══════════════════════════════════════════════════════════════════════════════════╗");
-    println!("║  BACKTEST RESULTS                                                               ║");
-    println!("╚══════════════════════════════════════════════════════════════════════════════════╝");
+    println!("{}",
+        "\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}");
+    println!("\u{2551}  BACKTEST RESULTS{}\u{2551}",
+        " ".repeat(63));
+    println!("{}",
+        "\u{255a}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255d}");
     println!();
 
     // ── Portfolio summary ──
-    println!("─── PORTFOLIO SUMMARY ─────────────────────────────────────────────────────────────");
+    println!("\u{2500}\u{2500}\u{2500} PORTFOLIO SUMMARY \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     println!("  Bankroll         ${:.0}", app.bankroll);
     println!("  Total PnL        ${:+.2}", app.total_pnl);
     println!("  Total Invested   ${:.2}", app.total_invested);
@@ -146,21 +174,24 @@ fn print_dump(app: &BacktestApp) {
     println!("  Win Rate         {:.1}% ({}/{})", app.win_rate() * 100.0, app.n_wins, app.n_wins + app.n_losses);
     println!("  Profit Factor    {:.2}", app.profit_factor());
     println!("  Sharpe Ratio     {:.2}", app.sharpe_ratio());
+    println!("  Sortino Ratio    {:.2}", app.sortino_ratio);
+    println!("  Calmar Ratio     {:.2}", app.calmar_ratio);
     println!("  Max Drawdown     ${:.2}", app.max_drawdown());
+    println!("  Max DD Duration  {} trades", app.max_drawdown_duration);
+    println!("  Recovery Factor  {:.2}", app.recovery_factor);
     println!("  Markets          {}", app.markets.len());
     println!("  Total Trades     {}", app.all_trades.len());
-
-    let wins_pnl: f64 = app.all_trades.iter().filter(|t| t.pnl > 0.0).map(|t| t.pnl).sum();
-    let loss_pnl: f64 = app.all_trades.iter().filter(|t| t.pnl < 0.0).map(|t| t.pnl).sum();
-    let avg_win = if app.n_wins > 0 { wins_pnl / app.n_wins as f64 } else { 0.0 };
-    let avg_loss = if app.n_losses > 0 { loss_pnl / app.n_losses as f64 } else { 0.0 };
-    println!("  Avg Win          ${:.2}", avg_win);
-    println!("  Avg Loss         ${:.2}", avg_loss);
-    println!("  Expectancy       ${:.2}/trade", if app.all_trades.is_empty() { 0.0 } else { app.total_pnl / app.all_trades.len() as f64 });
+    println!("  Avg Win          ${:.2}", app.avg_win);
+    println!("  Avg Loss         ${:.2}", app.avg_loss);
+    println!("  Payoff Ratio     {:.2}", app.payoff_ratio);
+    println!("  Expectancy       ${:.2}/trade", app.expectancy);
+    println!("  Kelly Fraction   {:.1}%", app.kelly_fraction * 100.0);
+    println!("  Consec Wins      {}", app.max_consecutive_wins);
+    println!("  Consec Losses    {}", app.max_consecutive_losses);
     println!();
 
     // ── Per-strategy breakdown ──
-    println!("─── STRATEGY BREAKDOWN ────────────────────────────────────────────────────────────");
+    println!("\u{2500}\u{2500}\u{2500} STRATEGY BREAKDOWN \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     println!("{:<20} {:>5} {:>5} {:>5} {:>7} {:>9} {:>9} {:>7} {:>7} {:>8} {:>8} {:>8} {:>6}",
         "Strategy", "Trd", "Win", "Loss", "WR%", "PnL", "Invested", "ROI%", "PF", "MaxDD", "Best", "Worst", "AvgT");
     println!("{:-<130}", "");
@@ -179,7 +210,7 @@ fn print_dump(app: &BacktestApp) {
     println!();
 
     // ── Per-strategy edge analysis ──
-    println!("─── EDGE ANALYSIS ─────────────────────────────────────────────────────────────────");
+    println!("\u{2500}\u{2500}\u{2500} EDGE ANALYSIS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     println!("{:<20} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
         "Strategy", "AvgEdge", "AvgConf", "AvgFair", "AvgMkt", "AvgSize", "Passive", "Active");
     println!("{:-<100}", "");
@@ -200,17 +231,15 @@ fn print_dump(app: &BacktestApp) {
     println!();
 
     // ── Per-market results ──
-    println!("─── MARKET RESULTS ────────────────────────────────────────────────────────────────");
+    println!("\u{2500}\u{2500}\u{2500} MARKET RESULTS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     println!("{:>3} {:<30} {:>8} {:>8} {:>7} {:>4} {:>5} {:>5} {:>9} {:>9}  {}",
         "#", "Market", "Strike", "Final", "Dist", "Out", "Trd", "WR%", "Invested", "PnL", "Strategies");
     println!("{:-<130}", "");
 
-    let mut cumulative = 0.0;
     for (i, m) in app.markets.iter().enumerate() {
         let n_trades = m.trades.len();
         let n_wins = m.trades.iter().filter(|t| t.won).count();
         let wr = if n_trades > 0 { n_wins as f64 / n_trades as f64 * 100.0 } else { 0.0 };
-        cumulative += m.total_pnl;
 
         let mut strat_counts: Vec<(String, usize)> = Vec::new();
         for t in &m.trades {
@@ -250,7 +279,7 @@ fn print_dump(app: &BacktestApp) {
     println!();
 
     // ── Equity curve (text sparkline) ──
-    println!("─── EQUITY CURVE ──────────────────────────────────────────────────────────────────");
+    println!("\u{2500}\u{2500}\u{2500} EQUITY CURVE \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     let max_pnl = app.equity_curve.iter().map(|e| e.1).fold(f64::MIN, f64::max);
     let min_pnl = app.equity_curve.iter().map(|e| e.1).fold(f64::MAX, f64::min);
     let range = (max_pnl - min_pnl).max(1.0);
@@ -269,7 +298,7 @@ fn print_dump(app: &BacktestApp) {
     println!();
 
     // ── All trades ──
-    println!("─── ALL TRADES ────────────────────────────────────────────────────────────────────");
+    println!("\u{2500}\u{2500}\u{2500} ALL TRADES \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     println!("{:>3} {:>4} {:<18} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5} {:>5} {:>2} {:>8} {:>3} {:>2} {:>9}",
         "Mkt", "#", "Strategy", "Side", "Price", "Size", "Edge", "Fair", "Conf", "T-lft", "T", "BTC", "Out", "W", "PnL");
     println!("{:-<130}", "");
@@ -291,42 +320,24 @@ fn print_dump(app: &BacktestApp) {
     println!();
 
     // ── Win/Loss distribution by time remaining ──
-    println!("─── TIMING ANALYSIS ───────────────────────────────────────────────────────────────");
-    let buckets = [(0.0, 30.0, "0-30s"), (30.0, 60.0, "30-60s"), (60.0, 120.0, "1-2min"), (120.0, 180.0, "2-3min"), (180.0, 300.0, "3-5min")];
+    println!("\u{2500}\u{2500}\u{2500} TIMING ANALYSIS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
     println!("{:<10} {:>5} {:>5} {:>5} {:>7} {:>9} {:>8}",
         "Time Left", "Trd", "Win", "Loss", "WR%", "PnL", "AvgEdge");
     println!("{:-<60}", "");
-    for (lo, hi, label) in &buckets {
-        let trades: Vec<_> = app.all_trades.iter()
-            .filter(|t| t.time_left_s >= *lo && t.time_left_s < *hi).collect();
-        if trades.is_empty() { continue; }
-        let n = trades.len();
-        let wins = trades.iter().filter(|t| t.won).count();
-        let pnl: f64 = trades.iter().map(|t| t.pnl).sum();
-        let avg_edge: f64 = trades.iter().map(|t| t.edge).sum::<f64>() / n as f64;
+    for bucket in &app.time_buckets {
+        if bucket.n_trades == 0 { continue; }
         println!("{:<10} {:>5} {:>5} {:>5} {:>6.1}% ${:>+8.2} {:>8.4}",
-            label, n, wins, n - wins,
-            wins as f64 / n as f64 * 100.0,
-            pnl, avg_edge);
+            bucket.label, bucket.n_trades, bucket.n_wins, bucket.n_trades - bucket.n_wins,
+            if bucket.n_trades > 0 { bucket.n_wins as f64 / bucket.n_trades as f64 * 100.0 } else { 0.0 },
+            bucket.total_pnl, bucket.avg_edge);
     }
     println!();
 
     // ── Side analysis ──
-    println!("─── SIDE ANALYSIS ─────────────────────────────────────────────────────────────────");
-    for side in &[Side::Up, Side::Down] {
-        let trades: Vec<_> = app.all_trades.iter().filter(|t| t.side == *side).collect();
-        if trades.is_empty() { continue; }
-        let n = trades.len();
-        let wins = trades.iter().filter(|t| t.won).count();
-        let pnl: f64 = trades.iter().map(|t| t.pnl).sum();
-        println!("  {:>5}: {} trades, {}/{} wins ({:.0}%), PnL ${:+.2}",
-            format!("{}", side), n, wins, n, wins as f64 / n as f64 * 100.0, pnl);
-    }
-
-    // Outcome distribution
-    let up_outcomes = app.markets.iter().filter(|m| m.outcome == Side::Up).count();
-    let dn_outcomes = app.markets.len() - up_outcomes;
-    println!("  Market outcomes: {} UP / {} DOWN", up_outcomes, dn_outcomes);
+    println!("\u{2500}\u{2500}\u{2500} SIDE ANALYSIS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+    println!("  UP:   {} trades, PnL ${:+.2}", app.up_trades, app.up_pnl);
+    println!("  DOWN: {} trades, PnL ${:+.2}", app.dn_trades, app.dn_pnl);
+    println!("  Market outcomes: {} UP / {} DOWN", app.up_outcomes, app.dn_outcomes);
     println!();
 }
 

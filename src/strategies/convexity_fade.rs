@@ -64,7 +64,7 @@ impl Strategy for ConvexityFade {
         // Compute expected probability swing: E[|ΔP|] = phi(d2) * sqrt(Δt/tau) * sqrt(2/pi)
         // Using Δt ≈ 10s (typical inter-update interval)
         let d = d2(s, k, sigma, tau);
-        let _expected_swing = phi(d) * (10.0 / tau).sqrt() * SQRT_2_OVER_PI;
+        let expected_swing = phi(d) * (10.0 / tau).sqrt() * SQRT_2_OVER_PI;
 
         // Fade: if PM overreacted (price moved away from fair), trade back
         // Buy UP if pm_ask < fair (market thinks UP is too cheap after oscillation)
@@ -106,8 +106,15 @@ impl Strategy for ConvexityFade {
             return None;
         }
 
-        // Low confidence, high frequency strategy
-        let confidence = 0.4;
+        // Dynamic confidence: scale by how large the expected swing is relative to edge.
+        // Larger swings near ATM → higher conviction the fade will revert.
+        // expected_swing ~ 0.02-0.10 near ATM; edge ~ 0.02-0.08.
+        // edge/expected_swing > 1 means edge exceeds typical oscillation → high confidence.
+        let confidence = if expected_swing > 0.0 {
+            (edge / expected_swing).clamp(0.3, 0.65)
+        } else {
+            0.3
+        };
 
         Some(Signal {
             strategy: "convexity_fade",

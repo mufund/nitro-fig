@@ -110,6 +110,7 @@ pub struct Fill {
 
 // ─── Orders & Execution ───
 
+#[derive(Clone)]
 pub struct Order {
     pub id: u64,
     pub side: Side,

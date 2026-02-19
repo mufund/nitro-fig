@@ -26,6 +26,49 @@ See [README.md#replay-tui](README.md#replay-tui) for full keybinding reference.
 
 ---
 
+## Backtest Binary
+
+The `backtest` binary replays recorded market data through the full strategy + risk pipeline, using the same shared `process_signals()` function as the live engine. This ensures backtest results accurately reflect live trading behavior including signal deconfliction, sorting, house-side coherence, and slippage simulation.
+
+Two modes: **Interactive TUI** (default) or **text dump** (`--dump`).
+
+```bash
+# Interactive TUI with 8-tab analytics dashboard
+cargo run --release --bin backtest -- logs/1h
+
+# Text dump to stdout (no TUI)
+cargo run --release --bin backtest -- --dump logs/1h
+```
+
+**TUI Tabs (8):**
+
+| Tab | What to look for |
+|-----|-----------------|
+| 1 Summary | Overall PnL, Sharpe/Sortino/Calmar ratios, directional bias, edge capture per strategy |
+| 2 Strategies | Per-strategy comparison — scroll through to see equity curves, consecutive streaks, edge std |
+| 3 Markets | Select a market with `j/k`, press `Enter` to drill-down into that market's individual trades |
+| 4 Trades | Press `f` to cycle filter by strategy — isolate which strategy generates best/worst trades |
+| 5 Equity | Per-trade equity with strategy overlays — look for divergence (one strategy dragging portfolio down) |
+| 6 Risk | Drawdown chart — visualize how deep and long drawdowns last. PnL histogram shows tail risk |
+| 7 Timing | PnL by time-remaining bucket — identifies if strategy performs better early or late in market |
+| 8 Correl | Strategy correlation matrix — low correlation = good diversification. Watch for >0.7 pairs |
+
+**Key differences from live engine:**
+- Fills are assumed immediate at `market_ask + 1 cent slippage`
+- No async channels — orders are pushed directly to `Vec<Fill>`
+- BinanceState persists across markets (same as live)
+- Uses `ProcessConfig::backtest()` (1 cent slippage) vs `ProcessConfig::live()` (0 slippage)
+
+**Warning thresholds:**
+- **Win rate < 60%**: Strategy calibration may need adjustment
+- **Max drawdown > bankroll * 5%**: Risk limits may be too loose
+- **Profit factor < 2.0**: Edge quality is marginal
+- **Sortino < 0.5**: Downside volatility too high relative to returns
+- **Strategy correlation > 0.7**: Two strategies are redundant — consider disabling one
+- **Single market dominates losses**: Check if house-side was set by low-confidence signal (should be fixed by >= 0.7 gate)
+
+---
+
 ## Reading Logs
 
 ### SSH and Tail

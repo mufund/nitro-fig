@@ -4,6 +4,7 @@
 use std::time::Instant;
 
 use polymarket_crypto::config::{Config, Interval};
+use polymarket_crypto::engine::pipeline::{self, ProcessConfig, SignalSink};
 use polymarket_crypto::engine::risk::StrategyRiskManager;
 use polymarket_crypto::engine::state::{BinanceState, MarketState};
 use polymarket_crypto::math::oracle::OracleBasis;
@@ -278,9 +279,55 @@ pub fn discover_markets(base_dir: &str) -> Vec<String> {
     dirs
 }
 
+// ─── BacktestSink ───
+
+/// SignalSink implementation for the backtest engine.
+/// Pushes fills and trade records directly into Vecs (no async channels).
+struct BacktestSink<'a> {
+    fills: &'a mut Vec<Fill>,
+    trade_records: &'a mut Vec<TradeRecord>,
+    market_idx: usize,
+    strike: f64,
+}
+
+impl<'a> SignalSink for BacktestSink<'a> {
+    fn on_signal(&mut self, _sig: &Signal, _state: &MarketState, _now_ms: i64) {
+        // Backtest doesn't need per-signal telemetry logging
+    }
+
+    fn on_order(&mut self, sig: &Signal, order: &Order, state: &MarketState, now_ms: i64) {
+        self.fills.push(Fill {
+            order_id: order.id,
+            strategy: sig.strategy,
+            side: sig.side,
+            price: order.price,
+            size: order.size,
+        });
+
+        self.trade_records.push(TradeRecord {
+            market_idx: self.market_idx,
+            order_id: order.id,
+            strategy: sig.strategy.to_string(),
+            side: sig.side,
+            price: order.price,
+            size: order.size,
+            edge: sig.edge,
+            fair_value: sig.fair_value,
+            confidence: sig.confidence,
+            time_left_s: state.time_left_s(now_ms),
+            is_passive: sig.is_passive,
+            btc_price: state.bn.binance_price,
+            strike: self.strike,
+            outcome: None,
+            pnl: 0.0,
+            won: false,
+        });
+    }
+}
+
 // ─── Run backtest for a single market ───
 
-pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskManager) -> Option<MarketResult> {
+pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskManager, persistent_bs: Option<BinanceState>) -> Option<(MarketResult, BinanceState)> {
     let binance_trades = load_binance_csv(&format!("{}/binance.csv", data_dir));
     let pm_quotes = load_polymarket_csv(&format!("{}/polymarket.csv", data_dir));
     let book_snapshots = load_book_csv(&format!("{}/book.csv", data_dir));
@@ -302,7 +349,7 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
     };
 
     let oracle = OracleBasis::new(0.0, 2.0);
-    let bs = BinanceState::new(0.94, 10, 0.30, 60_000, 30_000);
+    let bs = persistent_bs.unwrap_or_else(|| BinanceState::new(0.94, 10, 0.30, 60_000, 30_000));
     let mut state = MarketState::new(
         MarketInfo {
             slug: market_info.slug.clone(),
@@ -360,48 +407,20 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
             }
         }
 
-        // House-side coherence
-        if let Some(hs) = house_side {
-            signal_buf.retain(|s| s.is_passive || s.side == hs);
-        }
-
-        // Risk check and fill simulation
-        for sig in &signal_buf {
-            if let Some(order) = risk.check_strategy(sig, &state, next_order_id, now_ms) {
-                if house_side.is_none() && !sig.is_passive {
-                    house_side = Some(sig.side);
-                }
-
-                fills.push(Fill {
-                    order_id: order.id,
-                    strategy: sig.strategy,
-                    side: sig.side,
-                    price: order.price,
-                    size: order.size,
-                });
-
-                trade_records.push(TradeRecord {
-                    market_idx,
-                    order_id: order.id,
-                    strategy: sig.strategy.to_string(),
-                    side: sig.side,
-                    price: order.price,
-                    size: order.size,
-                    edge: sig.edge,
-                    fair_value: sig.fair_value,
-                    confidence: sig.confidence,
-                    time_left_s: state.time_left_s(now_ms),
-                    is_passive: sig.is_passive,
-                    btc_price: state.bn.binance_price,
-                    strike,
-                    outcome: None,
-                    pnl: 0.0,
-                    won: false,
-                });
-
-                risk.on_order_sent(sig.strategy, now_ms, order.size);
-                next_order_id += 1;
-            }
+        // Shared signal pipeline: deconfliction, sorting, risk check, fill simulation
+        {
+            let config = ProcessConfig::backtest();
+            let mut sink = BacktestSink {
+                fills: &mut fills,
+                trade_records: &mut trade_records,
+                market_idx,
+                strike,
+            };
+            pipeline::process_signals(
+                &mut signal_buf, &mut state, risk,
+                &mut house_side, &mut next_order_id, now_ms,
+                &config, &mut sink,
+            );
         }
         signal_buf.clear();
     }
@@ -435,7 +454,9 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| data_dir.to_string());
 
-    Some(MarketResult {
+    let bs_out = state.take_binance_state();
+
+    Some((MarketResult {
         dir_name,
         slug: market_info.slug,
         strike,
@@ -448,7 +469,7 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
         trades: trade_records,
         total_pnl,
         total_invested,
-    })
+    }, bs_out))
 }
 
 fn apply_event(state: &mut MarketState, event: &ReplayEvent, fake_instant: Instant) {
@@ -491,10 +512,12 @@ pub fn run_all_markets(market_dirs: &[String]) -> Vec<MarketResult> {
     let config = backtest_config();
     let mut risk = StrategyRiskManager::new(&config);
     let mut results = Vec::new();
+    let mut persistent_bs: Option<BinanceState> = None;
 
     for (i, dir) in market_dirs.iter().enumerate() {
-        if let Some(result) = run_market(dir, i, &mut risk) {
+        if let Some((result, bs)) = run_market(dir, i, &mut risk, persistent_bs.take()) {
             results.push(result);
+            persistent_bs = Some(bs);
         }
     }
 
