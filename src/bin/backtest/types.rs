@@ -19,6 +19,10 @@ pub struct TradeRecord {
     pub is_passive: bool,
     pub btc_price: f64,
     pub strike: f64,
+    // Fill-to-lose diagnostics: state at signal time
+    pub sigma_at_signal: f64,
+    pub z_at_signal: f64,
+    pub distance_at_signal: f64,
     // Settlement
     pub outcome: Option<Side>,
     pub pnl: f64,

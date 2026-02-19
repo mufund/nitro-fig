@@ -64,16 +64,7 @@ impl Strategy for CertaintyCapture {
             return None;
         }
 
-        // Sizing tiers based on z-score (higher z = more certain = more size)
-        let max_size_frac = if z_abs > 3.0 {
-            0.05
-        } else if z_abs > 2.5 {
-            0.03
-        } else {
-            0.02
-        };
-
-        let confidence = (z_abs / 4.0).clamp(0.5, 0.99);
+        let confidence = (z_abs / 3.0).clamp(0.375, 0.99);
 
         Some(Signal {
             strategy: "certainty_capture",
@@ -82,7 +73,7 @@ impl Strategy for CertaintyCapture {
             fair_value: fair,
             market_price: market_ask,
             confidence,
-            size_frac: kelly(edge, market_ask).min(max_size_frac),
+            size_frac: kelly(edge, market_ask),
             is_passive: false,
         })
     }
@@ -197,16 +188,17 @@ mod tests {
         }
     }
 
-    /// Scenario: BTC at $99k vs $95k with tau=60s giving z ~5.2 (highest sizing tier).
-    /// Expected: Size capped at 5% -- z > 3.0 unlocks the max tier but Kelly still limits.
+    /// Scenario: BTC at $99k vs $95k with tau=60s giving z ~5.2.
+    /// Expected: Size capped at 15% by kelly() clamp — risk manager clips further.
     #[test]
-    fn test_sizing_tier_high_z() {
-        // z > 3.0 → max_size_frac = 0.05
-        // BTC at 99000 vs 95000 with tau=60 → z ≈ ln(1.042) / (0.001*7.87) ≈ 5.2
+    fn test_sizing_high_z() {
+        // BTC at 99000 vs 95000 with tau=60 → z ≈ 5.2
+        // kelly() clamps at 0.15; risk manager's max_per_trade_frac handles the rest
         let (state, now) = make_state(95_000.0, 99_000.0, 0.001, 60.0, 0.90, 0.50);
         let sig = CertaintyCapture.evaluate(&state, now);
         if let Some(sig) = sig {
-            assert!(sig.size_frac <= 0.05, "High z tier caps at 5%: {}", sig.size_frac);
+            assert!(sig.size_frac <= 0.15, "Kelly caps at 15%: {}", sig.size_frac);
+            assert!(sig.size_frac > 0.0, "Should have positive size");
         }
     }
 

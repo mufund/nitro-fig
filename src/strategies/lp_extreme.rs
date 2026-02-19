@@ -39,7 +39,7 @@ impl Strategy for LpExtreme {
         // Min tau scales with market duration: ~20% of window, floored at 60s.
         // 5m→60s, 15m→180s, 1h→720s, 4h→2880s
         let market_duration_s = (state.info.end_ms - state.info.start_ms) as f64 / 1000.0;
-        let min_tau = (market_duration_s * 0.20).max(60.0);
+        let min_tau = (market_duration_s * 0.10).max(60.0);
         if tau < min_tau {
             return None;
         }
@@ -134,7 +134,7 @@ impl Strategy for LpExtreme {
         let bid_queue = book.bid_depth(3);
         let queue_scale = (1.0 - bid_queue / QUEUE_DEPTH_MAX).clamp(0.2, 1.0);
 
-        let size_frac = (f_star * 0.5 * queue_scale).clamp(0.0, 0.02); // half-Kelly, scaled, max 2%
+        let size_frac = (f_star * 0.5 * queue_scale).max(0.0); // half-Kelly, scaled by queue depth
         if size_frac < 0.001 {
             return None;
         }

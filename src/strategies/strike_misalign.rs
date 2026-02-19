@@ -105,7 +105,7 @@ impl Strategy for StrikeMisalign {
             fair_value: fair,
             market_price: market_ask,
             confidence,
-            size_frac: kelly(edge, market_ask).min(0.02),
+            size_frac: kelly(edge, market_ask),
             is_passive: false,
         })
     }

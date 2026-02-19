@@ -44,11 +44,17 @@ impl ProcessConfig {
 
 // ─── Shared pipeline ────────────────────────────────────────────────────────
 
+/// Maximum number of directional flips allowed per market.
+/// A flip is when house_side changes from Some(Up) to Some(Down) or vice versa.
+/// Prevents churn from repeated thesis reversals mid-market.
+const MAX_DIRECTION_FLIPS: u32 = 1;
+
 /// Process a batch of signals through the full pipeline.
 ///
 /// Steps:
 /// 1. **House-side filter**: If `house_side` is set, drop active signals on the
-///    wrong side (passive signals are exempt).
+///    wrong side (passive signals are exempt). If `flip_count >= MAX_DIRECTION_FLIPS`,
+///    also block active signals that would flip direction.
 /// 2. **Deconfliction**: If `house_side` is `None` and active signals disagree,
 ///    score each side by `sum(edge * confidence)`, keep the dominant side only.
 /// 3. **Sort** by `edge * confidence` descending so the best signals hit the
@@ -63,6 +69,7 @@ pub fn process_signals(
     state: &mut MarketState,
     risk: &mut StrategyRiskManager,
     house_side: &mut Option<Side>,
+    flip_count: &mut u32,
     next_order_id: &mut u64,
     now_ms: i64,
     config: &ProcessConfig,
@@ -136,8 +143,18 @@ pub fn process_signals(
             // Only high-confidence active signals can set the house direction.
             // Prevents low-conviction strategies (e.g. convexity_fade at 0.3-0.65)
             // from locking the portfolio into a direction based on a weak signal.
-            if house_side.is_none() && !sig.is_passive && sig.confidence >= 0.7 {
-                *house_side = Some(sig.side);
+            // Once MAX_DIRECTION_FLIPS is reached, house_side is locked for the market.
+            if !sig.is_passive && sig.confidence >= 0.7 {
+                match *house_side {
+                    None => {
+                        *house_side = Some(sig.side);
+                    }
+                    Some(prev) if prev != sig.side && *flip_count < MAX_DIRECTION_FLIPS => {
+                        *house_side = Some(sig.side);
+                        *flip_count += 1;
+                    }
+                    _ => {} // same side or flips exhausted — no change
+                }
             }
 
             risk.on_order_sent(sig.strategy, now_ms, order.size);
@@ -235,13 +252,14 @@ mod tests {
             make_signal("convexity_fade", Side::Down, 0.03, 0.6, 0.50), // score = 0.018
         ];
         let mut house_side = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         // All logged signals should be Up only (Down was deconflicted away)
@@ -262,13 +280,14 @@ mod tests {
             make_signal("latency_arb", Side::Down, 0.05, 0.8, 0.50),
         ];
         let mut house_side = Some(Side::Up);
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         assert!(sink.signals.is_empty(), "Down signal should be filtered by house=Up");
@@ -285,13 +304,14 @@ mod tests {
             make_passive_signal("lp_extreme", Side::Down, 0.05, 0.10),
         ];
         let mut house_side = Some(Side::Up);
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         assert_eq!(sink.signals.len(), 1, "Passive signal should survive house_side filter");
@@ -311,13 +331,14 @@ mod tests {
             make_signal("certainty_capture", Side::Up, 0.03, 0.9, 0.50), // score = 0.027
         ];
         let mut house_side = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         // Signals logged in score order: latency_arb (0.040), certainty_capture (0.027), convexity_fade (0.008)
@@ -338,13 +359,14 @@ mod tests {
             make_signal("convexity_fade", Side::Up, 0.05, 0.4, 0.50),
         ];
         let mut house_side: Option<Side> = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         assert!(house_side.is_none(), "Low-confidence signal should not set house_side");
@@ -361,13 +383,14 @@ mod tests {
             make_signal("strike_misalign", Side::Down, 0.05, 0.9, 0.50),
         ];
         let mut house_side: Option<Side> = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         // If the signal passed risk and filled, house_side should be set
@@ -388,13 +411,14 @@ mod tests {
             make_signal("latency_arb", Side::Up, 0.05, 0.8, 0.50),
         ];
         let mut house_side = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::backtest();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         if let Some((_, _, price, _)) = sink.orders.first() {
@@ -416,13 +440,14 @@ mod tests {
             make_signal("latency_arb", Side::Up, 0.05, 0.8, 0.50),
         ];
         let mut house_side = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         if let Some((_, _, price, _)) = sink.orders.first() {
@@ -444,13 +469,14 @@ mod tests {
             make_signal("latency_arb", Side::Up, 0.05, 0.8, 0.50),
         ];
         let mut house_side = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         assert!(state.total_signals >= 1, "total_signals should be incremented");
@@ -468,13 +494,14 @@ mod tests {
 
         let mut signals: Vec<Signal> = vec![];
         let mut house_side = None;
+        let mut flip_count = 0u32;
         let mut next_id = 1;
         let conf = ProcessConfig::live();
         let mut sink = TestSink::new();
 
         let result = process_signals(
             &mut signals, &mut state, &mut risk,
-            &mut house_side, &mut next_id, now, &conf, &mut sink,
+            &mut house_side, &mut flip_count, &mut next_id, now, &conf, &mut sink,
         );
 
         assert!(!result, "Empty signals should return false");

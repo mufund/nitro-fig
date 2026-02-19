@@ -304,6 +304,16 @@ impl<'a> SignalSink for BacktestSink<'a> {
             size: order.size,
         });
 
+        let sigma = state.sigma_real();
+        let s = state.s_est();
+        let k = self.strike;
+        let tau = state.tau_eff_s(now_ms);
+        let z = if sigma > 0.0 && tau > 0.0 && s > 0.0 && k > 0.0 {
+            (s / k).ln() / (sigma * tau.sqrt())
+        } else {
+            0.0
+        };
+
         self.trade_records.push(TradeRecord {
             market_idx: self.market_idx,
             order_id: order.id,
@@ -318,6 +328,9 @@ impl<'a> SignalSink for BacktestSink<'a> {
             is_passive: sig.is_passive,
             btc_price: state.bn.binance_price,
             strike: self.strike,
+            sigma_at_signal: sigma,
+            z_at_signal: z,
+            distance_at_signal: (s - k).abs(),
             outcome: None,
             pnl: 0.0,
             won: false,
@@ -367,6 +380,7 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
     let mut signal_buf: Vec<Signal> = Vec::new();
     let mut open_buf: Vec<Signal> = Vec::new();
     let mut house_side: Option<Side> = None;
+    let mut flip_count: u32 = 0;
     let mut next_order_id: u64 = 1;
     let fake_instant = Instant::now();
     let n_events = events.len();
@@ -418,7 +432,7 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
             };
             pipeline::process_signals(
                 &mut signal_buf, &mut state, risk,
-                &mut house_side, &mut next_order_id, now_ms,
+                &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
                 &config, &mut sink,
             );
         }

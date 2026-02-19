@@ -1,6 +1,6 @@
 use crate::engine::state::MarketState;
 use crate::math::normal::phi;
-use crate::math::pricing::{d2, p_fair};
+use crate::math::pricing::{d2, p_fair, z_score};
 use crate::math::regime::Regime;
 use crate::strategies::{kelly, Strategy};
 use crate::types::{EvalTrigger, Side, Signal};
@@ -19,6 +19,7 @@ const SQRT_2_OVER_PI: f64 = 0.797_884_560_802_865_4;
 const MAX_SPREAD: f64 = 0.08;          // skip if PM spread blown out (high uncertainty)
 const IMBALANCE_SKIP: f64 = 0.25;      // skip if bid/total depth < 25% (heavy sell pressure)
 const IMBALANCE_LEVELS: usize = 5;
+const MAX_Z_ABS: f64 = 0.40;           // skip if |z| > 0.40 (drifting from ATM → adverse selection)
 
 impl Strategy for ConvexityFade {
     fn name(&self) -> &'static str {
@@ -55,6 +56,13 @@ impl Strategy for ConvexityFade {
         let s = state.s_est();
         let k = state.info.strike;
         if s <= 0.0 || k <= 0.0 {
+            return None;
+        }
+
+        // z-score gate: high |z| means BTC is drifting from strike.
+        // Mean-reversion thesis fails when price is genuinely moving.
+        let z = z_score(s, k, sigma, tau);
+        if z.abs() > MAX_Z_ABS {
             return None;
         }
 
@@ -123,7 +131,7 @@ impl Strategy for ConvexityFade {
             fair_value: fair,
             market_price: market_ask,
             confidence,
-            size_frac: kelly(edge, market_ask).min(0.005),
+            size_frac: kelly(edge, market_ask),
             is_passive: false,
         })
     }

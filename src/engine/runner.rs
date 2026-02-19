@@ -163,6 +163,7 @@ pub async fn run_engine(
     // Side coherence: first ACTIVE order sets the house view for this market
     // Passive signals (lp_extreme) are exempt from house_side filtering
     let mut house_side: Option<Side> = None;
+    let mut flip_count: u32 = 0;
 
     // Diagnostic: periodic strategy health log (every 10s)
     let mut last_diag_ms: i64 = 0;
@@ -247,7 +248,7 @@ pub async fn run_engine(
                     let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
                     pipeline::process_signals(
                         &mut signals_buf, &mut state, &mut risk,
-                        &mut house_side, &mut next_order_id, now_ms,
+                        &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
                         &config, &mut sink,
                     );
                     if sink.dispatched {
@@ -295,7 +296,7 @@ pub async fn run_engine(
                     let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
                     pipeline::process_signals(
                         &mut signals_buf, &mut state, &mut risk,
-                        &mut house_side, &mut next_order_id, now_ms,
+                        &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
                         &config, &mut sink,
                     );
                     if sink.dispatched {
@@ -336,7 +337,7 @@ pub async fn run_engine(
                     let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
                     pipeline::process_signals(
                         &mut signals_buf, &mut state, &mut risk,
-                        &mut house_side, &mut next_order_id, now_ms,
+                        &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
                         &config, &mut sink,
                     );
                     if sink.dispatched {
@@ -483,8 +484,8 @@ pub async fn run_engine(
     }));
 
     eprintln!(
-        "[ENGINE] Market {} ended | outcome={:?} | house={:?} | sig={} ord={} fill={} pnl=${:.2} ({}fills settled)",
-        state.info.slug, outcome, house_side, state.total_signals, state.total_orders,
+        "[ENGINE] Market {} ended | outcome={:?} | house={:?} | flips={} | sig={} ord={} fill={} pnl=${:.2} ({}fills settled)",
+        state.info.slug, outcome, house_side, flip_count, state.total_signals, state.total_orders,
         state.total_filled, state.gross_pnl, fills.len(),
     );
     for (&name, stats) in &state.strategy_stats {

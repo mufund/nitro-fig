@@ -339,6 +339,54 @@ fn print_dump(app: &BacktestApp) {
     println!("  DOWN: {} trades, PnL ${:+.2}", app.dn_trades, app.dn_pnl);
     println!("  Market outcomes: {} UP / {} DOWN", app.up_outcomes, app.dn_outcomes);
     println!();
+
+    // ── Adverse selection analysis (fill-to-lose) ──
+    println!("\u{2500}\u{2500}\u{2500} ADVERSE SELECTION ANALYSIS \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}");
+    println!("  Do winning and losing trades differ at signal time?");
+    println!();
+    println!("{:<20} {:>7} {:>7} {:>7} {:>7} {:>9} {:>9} {:>9} {:>9}",
+        "Strategy", "W_Edge", "L_Edge", "W_Sig", "L_Sig", "W_|z|", "L_|z|", "W_Dist", "L_Dist");
+    println!("{:-<100}", "");
+    for name in &strat_names {
+        let wins: Vec<_> = app.all_trades.iter().filter(|t| &t.strategy == *name && t.won).collect();
+        let losses: Vec<_> = app.all_trades.iter().filter(|t| &t.strategy == *name && !t.won).collect();
+        if wins.is_empty() && losses.is_empty() { continue; }
+
+        let avg_or = |trades: &[&types::TradeRecord], f: fn(&&types::TradeRecord) -> f64| -> f64 {
+            if trades.is_empty() { 0.0 } else { trades.iter().map(f).sum::<f64>() / trades.len() as f64 }
+        };
+
+        let w_edge = avg_or(&wins, |t| t.edge);
+        let l_edge = avg_or(&losses, |t| t.edge);
+        let w_sigma = avg_or(&wins, |t| t.sigma_at_signal);
+        let l_sigma = avg_or(&losses, |t| t.sigma_at_signal);
+        let w_z = avg_or(&wins, |t| t.z_at_signal.abs());
+        let l_z = avg_or(&losses, |t| t.z_at_signal.abs());
+        let w_dist = avg_or(&wins, |t| t.distance_at_signal);
+        let l_dist = avg_or(&losses, |t| t.distance_at_signal);
+
+        println!("{:<20} {:>7.4} {:>7.4} {:>7.5} {:>7.5} {:>9.3} {:>9.3} ${:>7.0} ${:>7.0}",
+            name, w_edge, l_edge, w_sigma, l_sigma, w_z, l_z, w_dist, l_dist);
+    }
+    println!();
+
+    // Per-market fill quality
+    println!("  Per-market fill quality:");
+    println!("{:>3} {:<30} {:>5} {:>5} {:>8} {:>8} {:>8}",
+        "#", "Market", "W", "L", "AvgEdge", "AvgSig", "Avg|z|");
+    println!("{:-<80}", "");
+    for (i, m) in app.markets.iter().enumerate() {
+        if m.trades.is_empty() { continue; }
+        let n = m.trades.len() as f64;
+        let wins = m.trades.iter().filter(|t| t.won).count();
+        let losses = m.trades.len() - wins;
+        let avg_edge = m.trades.iter().map(|t| t.edge).sum::<f64>() / n;
+        let avg_sigma = m.trades.iter().map(|t| t.sigma_at_signal).sum::<f64>() / n;
+        let avg_z = m.trades.iter().map(|t| t.z_at_signal.abs()).sum::<f64>() / n;
+        println!("{:>3} {:<30} {:>5} {:>5} {:>8.4} {:>8.5} {:>8.3}",
+            i + 1, m.dir_name, wins, losses, avg_edge, avg_sigma, avg_z);
+    }
+    println!();
 }
 
 fn main() -> io::Result<()> {

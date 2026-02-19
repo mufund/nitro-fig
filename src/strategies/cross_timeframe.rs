@@ -177,7 +177,7 @@ impl Strategy for CrossTimeframe {
             fair_value: fair,
             market_price: market_ask,
             confidence,
-            size_frac: kelly(edge, market_ask).min(0.005),
+            size_frac: kelly(edge, market_ask),
             is_passive: false,
         })
     }

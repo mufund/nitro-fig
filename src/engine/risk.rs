@@ -94,9 +94,9 @@ impl StrategyRiskManager {
             "strike_misalign",
             StrategyLimits {
                 max_per_trade_frac: 0.02,   // $20 per trade
-                max_total_frac: 0.02,       // $20 total (1 order)
-                cooldown_ms: 15_000,        // 15s — only fires once in 15s window
-                max_orders_per_market: 1,
+                max_total_frac: 0.04,       // $40 total (2 orders)
+                cooldown_ms: 30_000,        // 30s — allows re-entry if edge persists
+                max_orders_per_market: 2,
             },
         );
         limits.insert(

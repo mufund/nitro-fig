@@ -106,7 +106,7 @@ impl Strategy for LatencyArb {
             fair_value: best_fair,
             market_price: effective_price,
             confidence,
-            size_frac: kelly(effective_edge, effective_price).min(0.02),
+            size_frac: kelly(effective_edge, effective_price),
             is_passive: false,
         })
     }
@@ -201,7 +201,7 @@ mod tests {
             if let Some(sig) = LatencyArb.evaluate(&state, now) {
                 assert_eq!(sig.side, Side::Up, "BTC above strike → UP side at price {}", bn_price);
                 assert!(sig.edge > 0.03);
-                assert!(sig.size_frac > 0.0 && sig.size_frac <= 0.02);
+                assert!(sig.size_frac > 0.0 && sig.size_frac <= 0.15);
                 signals += 1;
             }
         }
