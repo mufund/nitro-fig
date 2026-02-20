@@ -40,7 +40,9 @@ pub async fn order_gateway(
     use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
     use polymarket_client_sdk::clob::types::{
         Side as ClobSide, OrderType as ClobOrderType, SignatureType, OrderStatusType,
+        AssetType,
     };
+    use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
     use polymarket_client_sdk::types::{Decimal, U256};
     use polymarket_client_sdk::auth::{LocalSigner, Signer};
     use polymarket_client_sdk::POLYGON;
@@ -89,12 +91,75 @@ pub async fn order_gateway(
             .expect("[GW] CLOB authentication failed");
 
         eprintln!("[GW] CLOB client authenticated, address={}", client.address());
-        Some((client, signer))
+
+        // Check USDC (collateral) balance & allowance
+        match client
+            .balance_allowance(
+                BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .build(),
+            )
+            .await
+        {
+            Ok(resp) => {
+                eprintln!(
+                    "[GW] USDC balance={} allowances={:?}",
+                    resp.balance, resp.allowances
+                );
+                if resp.balance.is_zero() {
+                    eprintln!("[GW] ⚠ WARNING: USDC balance is ZERO — fund wallet before trading");
+                }
+                if resp.allowances.is_empty() {
+                    eprintln!("[GW] ⚠ WARNING: No USDC allowances set — run on-chain approve() first");
+                    eprintln!("[GW]   See: polymarket-client-sdk/examples/approvals.rs");
+                }
+            }
+            Err(e) => {
+                eprintln!("[GW] Failed to check balance/allowance: {} (continuing anyway)", e);
+            }
+        }
+
+        // Tell CLOB backend to refresh its cached view of on-chain state
+        if let Err(e) = client
+            .update_balance_allowance(
+                BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .build(),
+            )
+            .await
+        {
+            eprintln!("[GW] update_balance_allowance failed: {} (non-fatal)", e);
+        }
+
+        // Query initial USDC balance for pre-flight checks
+        let initial_balance: f64 = match client
+            .balance_allowance(
+                BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .build(),
+            )
+            .await
+        {
+            Ok(resp) => {
+                // resp.balance is in raw USDC (6 decimals) as a Decimal
+                let bal_f64: f64 = resp.balance.to_string().parse().unwrap_or(0.0);
+                bal_f64 / 1_000_000.0 // convert to human-readable USDC
+            }
+            Err(_) => 0.0,
+        };
+
+        Some((client, signer, initial_balance))
     } else {
         None
     };
 
     let _ = &market_ctx; // used in live path
+
+    // Track available USDC for pre-flight balance checks (live mode only)
+    let mut usdc_available: f64 = clob.as_ref().map(|(_, _, bal)| *bal).unwrap_or(0.0);
+    if !config.dry_run {
+        eprintln!("[GW] Available USDC for trading: ${:.2}", usdc_available);
+    }
 
     // ── Order processing loop ──
     while let Some(order) = order_rx.recv().await {
@@ -113,7 +178,18 @@ pub async fn order_gateway(
             }
         } else {
             // ── Live CLOB execution ──
-            let (ref client, ref signer) = *clob.as_ref().unwrap();
+            let (ref client, ref signer, _) = *clob.as_ref().unwrap();
+
+            // Pre-flight: check USDC balance before sending to CLOB
+            let usdc_needed = order.size;
+            if usdc_available < usdc_needed {
+                let reason = format!(
+                    "insufficient USDC: need ${:.2} but only ${:.2} available",
+                    usdc_needed, usdc_available
+                );
+                send_rejected_ack(&feed_tx, &telem_tx, &order, submit_at, reason).await;
+                continue;
+            }
 
             eprintln!(
                 "[GW] LIVE #{}: {:?} {:?} @ {:.tick$} x ${:.2} [{}] post_only={} token={:.8}..",
@@ -137,8 +213,10 @@ pub async fn order_gateway(
             // Convert size: our size is USDC notional, SDK expects shares (outcome tokens)
             // For BUY: you spend (shares * price) USDC to get (shares) tokens
             // So shares = usdc_notional / price
-            let shares = order.size / order.price;
-            let size_str = format!("{:.2}", shares);
+            // CLOB requires maker_amount (= shares * price) to have ≤2 decimal places,
+            // so we floor shares to ensure clean USDC amounts.
+            let shares = (order.size / order.price).floor();
+            let size_str = format!("{:.0}", shares);
             let size_dec = match Decimal::from_str(&size_str) {
                 Ok(d) => d,
                 Err(e) => {
@@ -282,7 +360,15 @@ pub async fn order_gateway(
 
                     // For Matched orders, filled_size is in USDC (our convention)
                     let filled_size = match &status {
-                        OrderStatus::Filled => Some(order.size),
+                        OrderStatus::Filled => {
+                            // Deduct from available balance
+                            usdc_available -= order.size;
+                            eprintln!(
+                                "[GW] USDC remaining: ${:.2} (spent ${:.2})",
+                                usdc_available, order.size
+                            );
+                            Some(order.size)
+                        }
                         _ => None,
                     };
 

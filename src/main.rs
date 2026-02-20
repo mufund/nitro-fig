@@ -22,6 +22,12 @@ use types::*;
 
 #[tokio::main]
 async fn main() {
+    // Load .env file if present (silently ignored if missing)
+    let _ = dotenvy::dotenv();
+
+    // Install rustls crypto provider (required when both aws-lc-rs and ring features are active)
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let config = Config::from_env();
     let http = reqwest::Client::new();
 
