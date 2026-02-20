@@ -184,6 +184,15 @@ pub enum TelemetryEvent {
     StrategyMetrics(StrategyMetricsRecord),
     /// Raw CLOB request/response JSON for exact-environment replay.
     RawClobResponse(RawClobRecord),
+    /// Local order rejection (e.g., insufficient balance). Triggers TG alert.
+    OrderRejectedLocal(OrderRejectedRecord),
+}
+
+#[derive(Clone)]
+pub struct OrderRejectedRecord {
+    pub order_id: u64,
+    pub strategy: String,
+    pub reason: String,
 }
 
 pub struct SignalRecord {

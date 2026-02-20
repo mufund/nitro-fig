@@ -143,6 +143,15 @@ impl TelegramClient {
         self.send_plain(&text).await;
     }
 
+    pub async fn send_rejection_alert(&self, order_id: u64, strategy: &str, reason: &str) {
+        let text = format!(
+            "⛔ ORDER #{} REJECTED (local)\n\
+             Strategy: {} | Reason: {}",
+            order_id, strategy, reason,
+        );
+        self.send_plain(&text).await;
+    }
+
     pub async fn send_market_summary(&self, m: &MarketEndRecord) {
         let outcome_str = match m.outcome {
             Side::Up => "🟢 UP",

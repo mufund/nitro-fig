@@ -1,6 +1,6 @@
 # Architecture
 
-Event-driven, low-latency trading system for Polymarket crypto Up/Down binary markets. Single-owner event loop design with zero shared mutable state. Persistent Binance WebSocket connection survives across market cycles.
+Event-driven, low-latency trading system for Polymarket crypto Up/Down binary markets (5m, 15m, 1h, 4h). Single-owner event loop design with zero shared mutable state. Persistent Binance WebSocket connection survives across market cycles. Live order execution via `polymarket-client-sdk` with EIP-712 signed limit orders.
 
 ## Data Flow
 
@@ -46,13 +46,16 @@ Event-driven, low-latency trading system for Polymarket crypto Up/Down binary ma
 │                 │                          │                             │
 │        ┌────────┘                          └────────┐                    │
 │        ▼                                            ▼                    │
-│  ┌──────────────┐                  ┌────────────────────────────────┐   │
-│  │ ORDER GATEWAY │                  │ TELEMETRY WRITER               │   │
-│  │  order_rx(64) │                  │  telem_rx(4096)                │   │
-│  │               │                  │  CSVs + Telegram alerts        │   │
-│  │ Order → CLOB  │                  │  signals / orders / fills /    │   │
-│  │ Ack → feed_tx │                  │  latency / market summary      │   │
-│  └──────────────┘                  └────────────────────────────────┘   │
+│  ┌──────────────────┐              ┌────────────────────────────────┐   │
+│  │ ORDER GATEWAY     │              │ TELEMETRY WRITER               │   │
+│  │  order_rx(64)     │              │  telem_rx(4096)                │   │
+│  │                   │              │  CSVs + Telegram alerts        │   │
+│  │ dry_run: simulate │              │  signals / orders / fills /    │   │
+│  │ live: CLOB submit │              │  latency / market summary /    │   │
+│  │   (EIP-712 sign)  │              │  rejected order alerts         │   │
+│  │ USDC balance gate │              │                                │   │
+│  │ Ack → feed_tx     │              │                                │   │
+│  └──────────────────┘              └────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -77,7 +80,7 @@ loop {
 - **Price state**: current/previous Binance price, timestamp
 - **Cached sigma_real**: Updated once per second, zero-cost reads on hot path
 
-**Effect**: Market 1 takes ~10 seconds to warm up EWMA (10 one-second samples). Market 2+ starts instantly with real volatility from the persistent state (ewma_n grows: 0 → 198 → 415 → 609 → ...).
+**Effect**: Market 1 takes ~10 seconds to warm up EWMA (10 one-second samples). Market 2+ carries over real volatility from the persistent state (ewma_n grows: 0 → 198 → 415 → 609 → ...). However, the engine still requires **10 fresh EWMA samples per market** before trading -- it records the sample count at market entry and waits for 10 new samples to accumulate. This prevents strategies from firing on stale cross-market volatility data.
 
 ## Why Single-Owner (vs Shared State)
 
@@ -94,8 +97,8 @@ loop {
 ```
 src/
 ├── lib.rs                         # Library crate — re-exports all modules
-├── main.rs                        # Market loop: discover → connect → engine → repeat
-├── config.rs                      # Interval, Config from env vars, series_id lookup
+├── main.rs                        # Market loop: discover → connect → engine → repeat (.env loaded via dotenvy)
+├── config.rs                      # Interval, Config from env vars/.env, series_id lookup, CLOB credentials
 ├── types.rs                       # FeedEvent, BinanceTrade, Signal, Fill, Order, etc.
 ├── feeds/
 │   ├── mod.rs
@@ -127,7 +130,7 @@ src/
 │   └── regime.rs                  # RegimeClassifier: Range/Ambiguous/Trend
 ├── gateway/
 │   ├── mod.rs
-│   └── order.rs                   # Order gateway: execute → ack back via feed channel
+│   └── order.rs                   # Order gateway: CLOB execution (live) / simulation (dry_run), USDC balance gate
 ├── telemetry/
 │   ├── mod.rs
 │   ├── writer.rs                  # Single writer task: CSVs + Telegram
@@ -149,6 +152,7 @@ src/
     │   ├── engine.rs              # Market replay, BacktestSink, CSV loaders
     │   ├── types.rs               # TradeRecord, MarketResult, StrategyStats, BacktestApp (analytics)
     │   └── render.rs              # 8-tab TUI rendering (summary, strategies, markets, trades, equity, risk, timing, correlation)
+    ├── approve.rs                 # One-time on-chain USDC.e + CTF approvals for Polymarket CLOB
     ├── analyzer.rs                # Post-hoc analysis of recorded data
     └── ws_test.rs                 # WebSocket connectivity test
 ```
@@ -157,10 +161,10 @@ src/
 
 Each market follows this sequence:
 
-1. **Discover** — Compute slug `btc-updown-5m-{window_start}`, query Gamma API
-2. **Wait** — Sleep until 10s before market start
-3. **Set strike** — Read latest Binance price from persistent `price_rx` watch channel
-4. **Create channels** — Per-market `feed_tx/rx`, `order_tx/rx`, `telem_tx/rx`
+1. **Discover** — Query Gamma API by series_id to find next market (slug, token IDs, tick_size, neg_risk)
+2. **Wait** — Sleep until pre-wake seconds before market start (10s for 5m, 30s for 1h)
+3. **Set strike** — Fetch candle open price from Binance klines API for the market's interval
+4. **Create channels** — Per-market `feed_tx/rx`, `order_tx/rx`, `telem_tx/rx`, market context oneshot
 5. **Activate Binance** — Swap the Binance feed's output to this market's `feed_tx`
 6. **Spawn per-market tasks** — Polymarket WS, heartbeat tick (100ms), order gateway, telemetry writer
 7. **Run engine** — Process events until `market.end_ms + 10s`, returns `BinanceState`
@@ -182,9 +186,11 @@ pm_strategies:       [certainty_capture, convexity_fade, lp_extreme]
 open_strategies:     [strike_misalign]
 ```
 
+**Per-market warmup**: Before evaluating binance/pm-triggered strategies, the engine requires 10 fresh 1-second EWMA samples collected since the current market started. This prevents firing on stale cross-market volatility. **Exception**: `open_strategies` (strike_misalign) are exempt — they only need `ewma_vol.is_valid()` and can fire immediately at market open.
+
 **Strategy evaluation triggers:**
-- `BinanceTrade` → evaluates `binance_strategies` + `open_strategies` if in first 15s
-- `PolymarketQuote` / `PolymarketBook` → evaluates `pm_strategies` + `open_strategies` if in first 15s
+- `BinanceTrade` → evaluates `binance_strategies` + `open_strategies` if in opening window
+- `PolymarketQuote` / `PolymarketBook` → evaluates `pm_strategies` + `open_strategies` if in opening window
 - `OrderAck` → records fill, updates position
 - `Tick` → stale data detection (5s threshold)
 
@@ -222,6 +228,32 @@ open_strategies:     [strike_misalign]
 **Sizing flow**: `Signal.size_frac * bankroll` → capped by per-trade limit → capped by strategy room → capped by portfolio room → minimum $1.
 
 **PnL accounting**: Fills are tracked in `Vec<Fill>` during the market. At settlement, `settle_market(outcome, fills)` computes correct binary PnL and updates daily/weekly counters. Per-market exposure resets to zero.
+
+## Order Gateway
+
+`gateway/order.rs` — background task that receives orders from the engine and returns acks.
+
+**Two modes:**
+- **`dry_run=true`** — Simulates immediate fills at the order price with 0ms latency. No network I/O.
+- **`dry_run=false`** — Real CLOB execution via `polymarket-client-sdk`:
+
+**Live execution flow:**
+1. Wait for `MarketContext` (tick_size, neg_risk, token IDs) from main.rs
+2. Authenticate: `LocalSigner` from `POLYMARKET_PRIVATE_KEY` → `Client::authentication_builder()` → `.authenticate().await`
+3. Pre-flight: query USDC balance via `balance_allowance()` API, log warning if zero
+4. Per order:
+   - **USDC balance gate**: reject locally if insufficient funds (emits `OrderRejectedLocal` telemetry + TG alert)
+   - Convert price (f64 → Decimal with tick_size precision), size (USDC → shares, floored to whole number)
+   - Build limit order: `client.limit_order().token_id().price().size().side(Buy).order_type(FOK|GTC).tick_size()` + `.neg_risk(true)` if applicable
+   - Sign with EIP-712: `client.sign(&signer, order).await`
+   - Submit: `client.post_order(signed).await` → `Vec<PostOrderResponse>`
+   - Record raw request/response JSON to `clob_raw.csv` via telemetry
+   - Return `OrderAck` with status, latency, CLOB order ID
+5. Deduct spent USDC from local balance tracker on successful fills
+
+**Order type mapping** (set in `risk.rs`):
+- `signal.is_passive == false` → `OrderType::FOK` (aggressive taker, crosses spread)
+- `signal.is_passive == true` → `OrderType::GTC` + `post_only: true` (passive maker, rests on book)
 
 ## Realized Volatility Model
 
@@ -263,6 +295,7 @@ No lock overhead anywhere in the hot path.
 | Binary | Command | Purpose |
 |---|---|---|
 | `bot` | `cargo run --release --bin bot` | Live trading / dry-run |
+| `approve` | `cargo run --release --bin approve` | One-time on-chain USDC.e + CTF approvals |
 | `backtest` | `cargo run --release --bin backtest -- logs/1h` | Multi-market backtester with 8-tab TUI dashboard (or `--dump` for text) |
 | `backtester` | `cargo run --release --bin backtester [dir]` | Replay CSVs through strategies (legacy) |
 | `recorder` | `cargo run --release --bin recorder -- --cycles N` | Record live feeds to CSV |
@@ -320,9 +353,11 @@ The `replay` binary provides an interactive terminal interface for stepping thro
 Minimal — no `parking_lot`, no locks anywhere:
 
 - `tokio` — Async runtime (mpsc, watch, time, spawn)
-- `reqwest` — HTTP (Gamma API, Telegram, future CLOB orders)
+- `polymarket-client-sdk` — CLOB client, EIP-712 signing, alloy signer (with `clob` + `ctf` features)
+- `reqwest` — HTTP (Gamma API, Telegram)
 - `tokio-tungstenite` — WebSocket (Binance + Polymarket CLOB)
 - `serde` / `serde_json` — JSON parsing
+- `dotenvy` — `.env` file loading
 - `chrono` — Timestamps
 - `futures-util` — Stream utilities for WS
 - `ratatui` + `crossterm` — Terminal UI framework (replay TUI)

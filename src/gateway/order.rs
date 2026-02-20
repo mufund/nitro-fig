@@ -431,6 +431,7 @@ pub async fn order_gateway(
 }
 
 /// Helper: send a Rejected ack back for validation errors before reaching the CLOB.
+/// Also emits an OrderRejectedLocal telemetry event so TG alerts fire.
 async fn send_rejected_ack(
     feed_tx: &mpsc::Sender<FeedEvent>,
     telem_tx: &mpsc::Sender<TelemetryEvent>,
@@ -445,6 +446,13 @@ async fn send_rejected_ack(
         order_id: order.id,
         direction: "error",
         raw_json: reason.clone(),
+    }));
+
+    // Send TG-alertable rejection event
+    let _ = telem_tx.try_send(TelemetryEvent::OrderRejectedLocal(OrderRejectedRecord {
+        order_id: order.id,
+        strategy: order.strategy.to_string(),
+        reason: reason.clone(),
     }));
 
     let ack = OrderAck {

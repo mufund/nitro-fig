@@ -8,16 +8,18 @@ All six strategies can be visualized in the [replay TUI](README.md#replay-tui) â
 
 ## How Polymarket Binary Markets Work
 
-Each market is a 5-minute window: will BTC be **above** (Up) or **below** (Down) the strike price at expiry? You buy Up or Down tokens priced $0.00-$1.00. If correct, the token pays $1.00. If wrong, it pays $0.00.
+Each market is a time window (5m, 15m, 1h, or 4h): will BTC be **above** (Up) or **below** (Down) the strike price at expiry? You buy Up or Down tokens priced $0.00-$1.00. If correct, the token pays $1.00. If wrong, it pays $0.00.
 
 **Edge** = our model's fair value minus the market's ask price. If we compute P(Up)=0.85 but Polymarket asks $0.72, edge = $0.13.
+
+**Strike price**: Set from the Binance klines (candle open) API at market start, not from a spot price snapshot. This reduces microstructure noise in the strike setting.
 
 **Key quantities used across all strategies:**
 
 | Symbol | Definition | Formula |
 |--------|-----------|---------|
 | S | Oracle-adjusted BTC estimate | `binance_price + beta` |
-| K | Strike price (set at market open) | First Binance price when market starts |
+| K | Strike price (set at market open) | Binance kline candle open for the market's interval |
 | sigma | Realized vol (per-second) | 1-second sampled EWMA, floored at 30% annualized |
 | tau | Effective time to expiry (seconds) | `time_left + delta_oracle` (floor 0.001s) |
 | z | Certainty score | `ln(S/K) / (sigma * sqrt(tau))` |
@@ -31,6 +33,7 @@ Each market is a 5-minute window: will BTC be **above** (Up) or **below** (Down)
 **File**: `strategies/latency_arb.rs`
 **Trigger**: Every Binance trade
 **Type**: Active (sets house view)
+**Order type**: FOK (aggressive taker -- crosses the spread)
 
 ### Concept
 
@@ -84,6 +87,7 @@ The minimum edge of 3 cents accounts for Polymarket's fee structure. Below this 
 **File**: `strategies/certainty_capture.rs`
 **Trigger**: Every Polymarket quote
 **Type**: Active (sets house view)
+**Order type**: FOK (aggressive taker)
 
 ### Concept
 
@@ -139,6 +143,7 @@ The z-score intentionally omits the drift term (`-sigma^2*tau/2`) that appears i
 **File**: `strategies/convexity_fade.rs`
 **Trigger**: Every Polymarket quote
 **Type**: Active (sets house view)
+**Order type**: FOK (aggressive taker)
 
 ### Concept
 
@@ -231,16 +236,17 @@ This represents how much the binary price should bounce in the next `dt` seconds
 ## S4: Strike Misalignment
 
 **File**: `strategies/strike_misalign.rs`
-**Trigger**: Binance trade (only in first 15 seconds of market)
+**Trigger**: Binance trade (only in opening window: ~5% of market duration)
 **Type**: Active (sets house view)
+**Order type**: FOK (aggressive taker)
 
 ### Concept
 
-The strike K is set from a single Binance price snapshot at market open. Due to microstructure noise (spread, timing, liquidity), this snapshot is often biased relative to the true fair price. The 60-second rolling VWAP provides a better estimate of BTC's "true" level. The difference between VWAP and strike represents a predictable pricing error that the market will correct within the first 10-15 seconds.
+The strike K is set from the Binance kline candle open at market start. While more stable than a single trade snapshot, it can still be biased relative to the true fair price. The 60-second rolling VWAP provides a better estimate of BTC's "true" level. The difference between VWAP and strike represents a predictable pricing error that the market will correct in the opening window.
 
 ### Mechanism Step-by-Step
 
-1. **Time window**: Only active in the first 15 seconds of the market (`elapsed_ms <= 15,000`). After this, the market has priced in the misalignment.
+1. **Time window**: Only active in the opening window (~5% of market duration, clamped 15s-300s). For 5m markets: 15s. For 1h markets: 120s. For 4h markets: 300s. After this, the market has priced in the misalignment.
 
 2. **Require VWAP data**: The persistent Binance state tracks a 60-second rolling VWAP. If no data is available yet (fresh start), skip.
 
@@ -272,7 +278,7 @@ The strike K is set from a single Binance price snapshot at market open. Due to 
 
 ### Why VWAP?
 
-A single price snapshot is noisy â€” it could be a local extreme caused by a single large market order. VWAP over 60 seconds smooths this out, representing where BTC is actually trading, not where a single trade printed. The difference between the snapshot and VWAP is mean-reverting and predictable.
+The candle open price is a single point-in-time value that may not represent where BTC is actually trading. VWAP over 60 seconds smooths this out, representing the volume-weighted average. The difference between the candle open strike and VWAP is mean-reverting and predictable.
 
 ### Sensitivity Formula
 
@@ -294,6 +300,7 @@ The formula `phi(d2) / (S * sigma * sqrt(tau))` is the binary option delta. It m
 **File**: `strategies/lp_extreme.rs`
 **Trigger**: Both Binance trades and Polymarket quotes
 **Type**: Passive (exempt from house view)
+**Order type**: GTC + post_only (passive maker -- rests on the book)
 
 ### Concept
 
@@ -400,6 +407,21 @@ Each strategy can be individually enabled or disabled via environment variables.
 At startup, the engine logs which strategies are active:
 ```
 [ENGINE] Strategies enabled: ["latency_arb", "certainty_capture", "convexity_fade", "strike_misalign", "lp_extreme"]
+```
+
+---
+
+## Per-Market Warmup
+
+BinanceState (EWMA vol, VWAP, regime) persists across market cycles. On market 2+, the EWMA may already have hundreds of samples from prior markets. To prevent strategies from firing on stale cross-market data, the engine requires **10 fresh 1-second EWMA samples** collected after the current market starts before enabling trading for most strategies.
+
+The engine records the EWMA sample count at market entry (`warmup_baseline`) and checks that `n_samples - baseline >= 10` before evaluating binance/pm-triggered strategies. This guarantees ~10 seconds of fresh volatility data even when the EWMA carries over from a previous market.
+
+**Exception**: `open_strategies` (strike_misalign) are **exempt** from the fresh-samples gate. They only require `ewma_vol.is_valid()` (sigma > 0). Their edge comes from the strike-VWAP divergence, not from having perfectly fresh vol. Waiting 10 seconds would consume most of the opening window on short intervals (5m markets have a 15s window).
+
+```
+[ENGINE] Running market ... | warmup_baseline=415
+[ENGINE] Warmup complete: ... total_samples=425 fresh=10 | trading enabled
 ```
 
 ---

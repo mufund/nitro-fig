@@ -189,13 +189,22 @@ pub async fn run_engine(
 
     let mut warmup_done = false;
 
+    // Per-market warmup: require fresh EWMA samples collected AFTER this market starts.
+    // On market 1, BinanceState starts empty so this aligns with ewma_vol.is_valid().
+    // On market 2+, BinanceState is pre-populated from the prior market, so
+    // ewma_vol.is_valid() is immediately true. This counter ensures we collect
+    // fresh volatility data for the new market before trading.
+    let warmup_samples_at_start = state.bn.ewma_vol.n_samples();
+    const MIN_FRESH_SAMPLES: u32 = 10; // 10 one-second samples (~10s of fresh data)
+
     eprintln!(
-        "[ENGINE] Running market {} | strike=${:.0} | window={}s | bankroll=${:.0} | ewma_n={}",
+        "[ENGINE] Running market {} | strike=${:.0} | window={}s | bankroll=${:.0} | ewma_n={} | warmup_baseline={}",
         state.info.slug,
         state.info.strike,
         (state.info.end_ms - state.info.start_ms) / 1000,
         config.bankroll,
         state.bn.ewma_vol.n_samples(),
+        warmup_samples_at_start,
     );
 
     while let Some(event) = feed_rx.recv().await {
@@ -220,13 +229,49 @@ pub async fn run_engine(
                 if !state.bn.ewma_vol.is_valid() {
                     continue;
                 }
+
+                // ── Open-window strategies (strike_misalign) are exempt from
+                // fresh-samples warmup. They only need ewma_vol.is_valid()
+                // (checked above). Their edge comes from strike-VWAP divergence,
+                // not from having perfectly fresh vol. Waiting 10s would eat
+                // most of the opening window on short intervals (5m=15s).
+                let elapsed_ms = now_ms - state.info.start_ms;
+                let in_open_window = elapsed_ms >= 0 && elapsed_ms <= config.interval.open_window_ms();
+                if in_open_window {
+                    let eval_start = Instant::now();
+                    evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
+                    if !open_buf.is_empty() {
+                        let eval_us = eval_start.elapsed().as_micros() as u64;
+                        let config = ProcessConfig::live();
+                        let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                        pipeline::process_signals(
+                            &mut open_buf, &mut state, &mut risk,
+                            &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
+                            &config, &mut sink,
+                        );
+                        if sink.dispatched {
+                            let e2e_us = recv_at.elapsed().as_micros() as u64;
+                            let _ = telem_tx.try_send(TelemetryEvent::Latency(LatencyRecord {
+                                ts_ms: now_ms, event: "e2e", latency_us: e2e_us,
+                            }));
+                        }
+                    }
+                }
+
+                // Per-market warmup: require MIN_FRESH_SAMPLES new 1-second EWMA
+                // samples collected since this market started.
+                let fresh_samples = state.bn.ewma_vol.n_samples() - warmup_samples_at_start;
                 if !warmup_done {
+                    if fresh_samples < MIN_FRESH_SAMPLES {
+                        continue;
+                    }
                     warmup_done = true;
                     eprintln!(
-                        "[ENGINE] Warmup complete: σ_real={:.8} σ_raw={:.8} samples={} | trading enabled",
+                        "[ENGINE] Warmup complete: σ_real={:.8} σ_raw={:.8} total_samples={} fresh={} | trading enabled",
                         state.sigma_real(),
                         state.bn.ewma_vol.sigma(),
                         state.bn.ewma_vol.n_samples(),
+                        fresh_samples,
                     );
                 }
 
@@ -239,12 +284,6 @@ pub async fn run_engine(
                 // ── Evaluate Binance-triggered strategies ──
                 let eval_start = Instant::now();
                 evaluate_filtered(&binance_strategies, &state, now_ms, &mut signals_buf);
-
-                let elapsed_ms = now_ms - state.info.start_ms;
-                if elapsed_ms >= 0 && elapsed_ms <= config.interval.open_window_ms() {
-                    evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
-                    signals_buf.extend(open_buf.drain(..));
-                }
 
                 let eval_us = eval_start.elapsed().as_micros() as u64;
                 let _ = telem_tx.try_send(TelemetryEvent::Latency(LatencyRecord {
@@ -281,7 +320,31 @@ pub async fn run_engine(
                     latency_us: pm_recv_us,
                 }));
 
-                if !state.has_data() || !warmup_done {
+                if !state.has_data() {
+                    continue;
+                }
+
+                // Open-window strategies: exempt from fresh-samples warmup
+                // (only need ewma_vol.is_valid(), checked via has_data)
+                if !warmup_done && state.bn.ewma_vol.is_valid() {
+                    let elapsed_ms = now_ms - state.info.start_ms;
+                    if elapsed_ms >= 0 && elapsed_ms <= config.interval.open_window_ms() {
+                        evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
+                        if !open_buf.is_empty() {
+                            let eval_us = 0u64;
+                            let config = ProcessConfig::live();
+                            let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                            pipeline::process_signals(
+                                &mut open_buf, &mut state, &mut risk,
+                                &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
+                                &config, &mut sink,
+                            );
+                        }
+                    }
+                    continue;
+                }
+
+                if !warmup_done {
                     continue;
                 }
 
@@ -322,7 +385,30 @@ pub async fn run_engine(
                 let recv_at = book.recv_at;
                 state.on_book_update(book);
 
-                if !state.has_data() || !warmup_done {
+                if !state.has_data() {
+                    continue;
+                }
+
+                // Open-window strategies: exempt from fresh-samples warmup
+                if !warmup_done && state.bn.ewma_vol.is_valid() {
+                    let elapsed_ms = now_ms - state.info.start_ms;
+                    if elapsed_ms >= 0 && elapsed_ms <= config.interval.open_window_ms() {
+                        evaluate_filtered(&open_strategies, &state, now_ms, &mut open_buf);
+                        if !open_buf.is_empty() {
+                            let eval_us = 0u64;
+                            let config = ProcessConfig::live();
+                            let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                            pipeline::process_signals(
+                                &mut open_buf, &mut state, &mut risk,
+                                &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
+                                &config, &mut sink,
+                            );
+                        }
+                    }
+                    continue;
+                }
+
+                if !warmup_done {
                     continue;
                 }
 

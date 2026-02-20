@@ -4,29 +4,41 @@ Event-driven Polymarket crypto binary options trading bot.
 
 ## What It Does
 
-Trades BTC/ETH/SOL/XRP up/down 5-minute binary markets on Polymarket using Binance spot as a price oracle. The bot auto-discovers markets, connects to both exchanges via WebSocket, evaluates six independent strategies on every tick, and settles PnL at market close. Markets cycle continuously with no manual intervention.
+Trades BTC/ETH/SOL/XRP up/down binary markets (5m, 15m, 1h, 4h intervals) on Polymarket using Binance spot as a price oracle. The bot auto-discovers markets, connects to both exchanges via WebSocket, evaluates six independent strategies on every tick, and submits EIP-712 signed limit orders to the Polymarket CLOB. Markets cycle continuously with no manual intervention.
 
 ## Key Features
 
+- **Live CLOB execution** -- EIP-712 signed limit orders via `polymarket-client-sdk`, with pre-flight USDC balance checks and raw request/response logging
 - **Single-owner async event loop** -- zero shared mutable state, no locks on the hot path
 - **6 configurable strategies** -- latency arbitrage, certainty capture, convexity fade, strike misalignment, extreme probability LP, cross-timeframe (disabled by default). Each individually togglable via env vars.
-- **Persistent Binance state** -- EWMA volatility, VWAP, and regime classifier carry across market cycles (only the first market needs warmup)
+- **Persistent Binance state** -- EWMA volatility, VWAP, and regime classifier carry across market cycles. Per-market warmup gate requires 10 fresh EWMA samples before trading.
 - **Binary settlement PnL** -- correct accounting at market end, not at fill time
 - **Side coherence** -- active strategies agree on a directional house view; passive LP is exempt
 - **Two-tier risk** -- per-strategy limits (size, cooldown, order caps) plus portfolio-level exposure and loss halts
+- **Telegram alerts** -- order submissions, fills, market start/end summaries, strategy metrics, and locally-rejected orders (e.g. insufficient balance)
+- **`.env` file support** -- configuration via `.env` file (loaded by `dotenvy`) or environment variables
 - **Interactive replay TUI** -- step through recorded market data tick-by-tick with live orderbook, BTC/PM charts, strategy signals, and CSV export
 - **Institutional backtest TUI** -- 8-tab analytics dashboard: summary, strategies, markets, trades, equity, risk, timing, correlation matrix
 
 ## Quick Start
 
-See [DEPLOY.md](DEPLOY.md) for VPS setup, environment variables, and deploy commands.
+See [DEPLOY.md](DEPLOY.md) for VPS setup, `.env` configuration, and deploy commands.
 
 ```bash
 # Build
 cargo build --release
 
+# Configure via .env file (or export env vars directly)
+cp .env.example .env   # edit with your keys
+
 # Run (dry-run mode by default)
-DRY_RUN=true BANKROLL=1000 ./target/release/bot
+./target/release/bot
+
+# Run live (requires POLYMARKET_PRIVATE_KEY in .env)
+DRY_RUN=false ./target/release/bot
+
+# One-time on-chain USDC.e + CTF approvals (required before first live trade)
+cargo run --release --bin approve
 
 # Record 5 market cycles
 cargo run --release --bin recorder -- --cycles 5
@@ -55,6 +67,7 @@ cargo run --release --bin backtest -- --dump logs/1h
 | Binary | Command | Purpose |
 |--------|---------|---------|
 | `bot` | `cargo run --release --bin bot` | Live trading / dry-run |
+| `approve` | `cargo run --release --bin approve` | One-time on-chain USDC.e + CTF approvals for all 3 Polymarket exchange contracts |
 | `backtest` | `cargo run --release --bin backtest -- logs/1h` | Multi-market backtester with 8-tab TUI dashboard (or `--dump` for text mode) |
 | `backtester` | `cargo run --release --bin backtester [dir]` | Replay recorded CSVs through strategies, print signal/order summary (legacy) |
 | `recorder` | `cargo run --release --bin recorder -- --cycles N` | Record live Binance + Polymarket feeds to CSV (default: infinite cycles) |
@@ -148,6 +161,21 @@ Each strategy can be independently enabled or disabled via environment variables
 # Example: disable convexity fade and latency arb
 STRAT_CONVEXITY_FADE=false STRAT_LATENCY_ARB=0 ./target/release/bot
 ```
+
+## Order Types
+
+All orders are limit orders submitted via the SDK's `limit_order()` builder. The `is_passive` flag on each signal determines execution style:
+
+| Strategy | `is_passive` | Order Type | Behavior |
+|----------|-------------|------------|----------|
+| latency_arb | `false` | FOK (Fill-or-Kill) | Aggressive taker -- crosses the spread, fills immediately or cancels |
+| certainty_capture | `false` | FOK | Aggressive taker |
+| convexity_fade | `false` | FOK | Aggressive taker |
+| strike_misalign | `false` | FOK | Aggressive taker |
+| lp_extreme | `true` | GTC + post_only | Passive maker -- rests on the book, earns maker rebate |
+| cross_timeframe | `false` | FOK | Aggressive taker (disabled) |
+
+Polymarket has no native market order type. FOK limit orders at the best ask price behave like market orders (immediate fill or cancel). GTC + post_only orders rest on the book and reject if they would cross the spread.
 
 ## Test Coverage
 

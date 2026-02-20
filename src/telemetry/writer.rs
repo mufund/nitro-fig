@@ -195,6 +195,20 @@ pub async fn telemetry_writer(
                     r.ts_ms, r.order_id, r.direction, escaped,
                 ).ok();
             }
+            TelemetryEvent::OrderRejectedLocal(r) => {
+                eprintln!(
+                    "[TELEM] Order #{} rejected locally: {} ({})",
+                    r.order_id, r.reason, r.strategy
+                );
+                // Fire-and-forget TG alert
+                if let Some(tg) = &tg {
+                    let tg = tg.clone();
+                    let record = r.clone();
+                    tokio::spawn(async move {
+                        tg.send_rejection_alert(record.order_id, &record.strategy, &record.reason).await;
+                    });
+                }
+            }
         }
     }
 
