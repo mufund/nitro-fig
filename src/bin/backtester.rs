@@ -131,6 +131,8 @@ fn run_single_market(data_dir: &str) -> (Vec<BacktestEntry>, bool, u64) {
             up_token_id: String::new(),
             down_token_id: String::new(),
             strike,
+            tick_size: 0.01,
+            neg_risk: false,
         },
         bs,
         oracle,

@@ -97,6 +97,9 @@ pub fn backtest_config() -> Config {
         strategy_lp_extreme: true,
         strategy_cross_timeframe: false,
         dry_run: true,
+        polymarket_private_key: None,
+        polymarket_funder_address: None,
+        polymarket_signature_type: 0,
     }
 }
 
@@ -371,6 +374,8 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
             up_token_id: String::new(),
             down_token_id: String::new(),
             strike,
+            tick_size: 0.01,
+            neg_risk: false,
         },
         bs,
         oracle,

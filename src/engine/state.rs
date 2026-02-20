@@ -727,6 +727,8 @@ mod tests {
             up_token_id: "up".to_string(),
             down_token_id: "down".to_string(),
             strike,
+            tick_size: 0.01,
+            neg_risk: false,
         };
         let oracle = OracleBasis::new(0.0, 2.0);
         let mut bn = BinanceState::new(0.94, 5, 0.30, 30_000, 60_000);
@@ -786,6 +788,8 @@ mod tests {
             up_token_id: "up".to_string(),
             down_token_id: "down".to_string(),
             strike: 95_000.0,
+            tick_size: 0.01,
+            neg_risk: false,
         };
         let oracle = OracleBasis::new(15.0, 2.0);
         let mut bn = BinanceState::new(0.94, 5, 0.30, 30_000, 60_000);
@@ -805,6 +809,8 @@ mod tests {
             up_token_id: "up".to_string(),
             down_token_id: "down".to_string(),
             strike: 95_000.0,
+            tick_size: 0.01,
+            neg_risk: false,
         };
         let oracle = OracleBasis::new(0.0, 3.0);
         let bn = BinanceState::new(0.94, 5, 0.30, 30_000, 60_000);
@@ -865,6 +871,8 @@ mod tests {
             filled_price: Some(0.50),
             filled_size: Some(10.0),
             latency_ms: 50.0,
+            clob_order_id: None,
+            raw_response: None,
         });
         pt.on_order_sent();
         pt.on_fill(&OrderAck {
@@ -873,6 +881,8 @@ mod tests {
             filled_price: Some(0.60),
             filled_size: Some(10.0),
             latency_ms: 50.0,
+            clob_order_id: None,
+            raw_response: None,
         });
         assert!((pt.size - 20.0).abs() < 1e-10);
         assert!((pt.avg_price - 0.55).abs() < 1e-10);
@@ -891,6 +901,8 @@ mod tests {
             filled_price: Some(0.55),
             filled_size: Some(10.0),
             latency_ms: 50.0,
+            clob_order_id: None,
+            raw_response: None,
         });
         assert_eq!(pt.pending_orders, 0);
     }

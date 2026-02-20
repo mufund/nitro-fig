@@ -86,13 +86,23 @@ impl<'a> SignalSink for LiveSink<'a> {
         }));
 
         eprintln!(
-            "[SIG] {} {:?} edge={:.3} fair={:.3} mkt={:.3} sz=${:.1} {}",
+            "[SIG] {} {:?} edge={:.3} fair={:.3} mkt={:.3} sz=${:.1} {} {:?} post_only={}",
             sig.strategy, sig.side, sig.edge, sig.fair_value,
             sig.market_price, order.size,
             if sig.is_passive { "PASSIVE" } else { "ACTIVE" },
+            order.order_type, order.post_only,
         );
 
-        let _ = self.order_tx.try_send(order.clone());
+        // Set token_id from MarketInfo before dispatch
+        let mut order = order.clone();
+        order.token_id = match order.side {
+            Side::Up => state.info.up_token_id.clone(),
+            Side::Down => state.info.down_token_id.clone(),
+        };
+
+        if let Err(e) = self.order_tx.try_send(order) {
+            eprintln!("[WARN] Order channel full, dropping order #{}", e.into_inner().id);
+        }
         self.dispatched = true;
     }
 }

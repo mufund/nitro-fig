@@ -58,6 +58,17 @@ pub struct MarketInfo {
     pub up_token_id: String,
     pub down_token_id: String,
     pub strike: f64,
+    pub tick_size: f64,
+    pub neg_risk: bool,
+}
+
+/// Per-market context sent to the order gateway at market start.
+#[derive(Clone)]
+pub struct MarketContext {
+    pub up_token_id: String,
+    pub down_token_id: String,
+    pub tick_size: f64,
+    pub neg_risk: bool,
 }
 
 // ─── Strategy Output ───
@@ -110,6 +121,15 @@ pub struct Fill {
 
 // ─── Orders & Execution ───
 
+/// Order type for CLOB submission.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OrderType {
+    /// Good-Till-Cancelled: rests on the book until filled or cancelled.
+    GTC,
+    /// Fill-Or-Kill: must fill immediately and completely, or is cancelled.
+    FOK,
+}
+
 #[derive(Clone)]
 pub struct Order {
     pub id: u64,
@@ -120,6 +140,12 @@ pub struct Order {
     pub signal_edge: f64,
     pub is_passive: bool,
     pub created_at: Instant,
+    /// CLOB order type: GTC for passive limit, FOK for aggressive taker.
+    pub order_type: OrderType,
+    /// Post-only: reject if order would cross the spread. Only valid with GTC.
+    pub post_only: bool,
+    /// CLOB token ID for the outcome being bought.
+    pub token_id: String,
 }
 
 pub struct OrderAck {
@@ -128,6 +154,10 @@ pub struct OrderAck {
     pub filled_price: Option<f64>,
     pub filled_size: Option<f64>,
     pub latency_ms: f64,
+    /// CLOB-assigned order ID (for tracking/cancellation).
+    pub clob_order_id: Option<String>,
+    /// Raw JSON response from CLOB (for recording/replay).
+    pub raw_response: Option<String>,
 }
 
 #[derive(Debug)]
@@ -136,6 +166,10 @@ pub enum OrderStatus {
     PartialFill,
     Rejected(String),
     Timeout,
+    /// Order posted to book, awaiting match (post_only GTC success).
+    Live,
+    /// Post-only order rejected because it would cross the spread.
+    Unmatched,
 }
 
 // ─── Telemetry Events ───
@@ -148,6 +182,8 @@ pub enum TelemetryEvent {
     MarketStart(MarketStartRecord),
     MarketEnd(MarketEndRecord),
     StrategyMetrics(StrategyMetricsRecord),
+    /// Raw CLOB request/response JSON for exact-environment replay.
+    RawClobResponse(RawClobRecord),
 }
 
 pub struct SignalRecord {
@@ -172,6 +208,7 @@ pub struct LatencyRecord {
     pub latency_us: u64,
 }
 
+#[derive(Clone)]
 pub struct OrderRecord {
     pub ts_ms: i64,
     pub order_id: u64,
@@ -184,6 +221,7 @@ pub struct OrderRecord {
     pub time_left_s: f64,
 }
 
+#[derive(Clone)]
 pub struct FillRecord {
     pub ts_ms: i64,
     pub order_id: u64,
@@ -196,6 +234,7 @@ pub struct FillRecord {
     pub pnl_if_correct: Option<f64>,
 }
 
+#[derive(Clone)]
 pub struct MarketStartRecord {
     pub ts_ms: i64,
     pub slug: String,
@@ -204,6 +243,7 @@ pub struct MarketStartRecord {
     pub end_ms: i64,
 }
 
+#[derive(Clone)]
 pub struct PerStrategyEnd {
     pub strategy: String,
     pub signals: u32,
@@ -213,6 +253,7 @@ pub struct PerStrategyEnd {
     pub avg_edge: f64,
 }
 
+#[derive(Clone)]
 pub struct MarketEndRecord {
     pub ts_ms: i64,
     pub slug: String,
@@ -226,6 +267,7 @@ pub struct MarketEndRecord {
     pub per_strategy: Vec<PerStrategyEnd>,
 }
 
+#[derive(Clone)]
 pub struct StrategyMetricsRecord {
     pub ts_ms: i64,
     pub strategy: String,
@@ -234,4 +276,13 @@ pub struct StrategyMetricsRecord {
     pub adverse_selection: f64,
     pub win_rate: f64,
     pub avg_edge: f64,
+}
+
+/// Raw CLOB request/response for recording and replay.
+pub struct RawClobRecord {
+    pub ts_ms: i64,
+    pub order_id: u64,
+    /// "submit" or "response"
+    pub direction: &'static str,
+    pub raw_json: String,
 }

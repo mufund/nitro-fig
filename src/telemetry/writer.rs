@@ -24,8 +24,11 @@ impl CsvWriter {
 }
 
 /// Single background task that handles ALL telemetry:
-/// signals CSV, latency CSV, orders CSV, fills CSV, AND Telegram alerts.
+/// signals CSV, latency CSV, orders CSV, fills CSV, raw CLOB CSV, AND Telegram alerts.
 /// Consolidates all I/O into one task that never touches the hot path.
+///
+/// Telegram sends are fire-and-forget (tokio::spawn) — a slow TG response
+/// never blocks CSV writes or delays the next event.
 pub async fn telemetry_writer(
     mut rx: mpsc::Receiver<TelemetryEvent>,
     config: Config,
@@ -53,6 +56,10 @@ pub async fn telemetry_writer(
     let mut fills_csv = CsvWriter::new(
         &format!("{}/fills.csv", dir),
         "ts_ms,order_id,strategy,status,filled_price,filled_size,submit_to_ack_ms,pnl_if_correct",
+    );
+    let mut clob_raw_csv = CsvWriter::new(
+        &format!("{}/clob_raw.csv", dir),
+        "ts_ms,order_id,direction,raw_json",
     );
 
     let tg = match (&config.tg_bot_token, &config.tg_chat_id) {
@@ -92,8 +99,11 @@ pub async fn telemetry_writer(
                     o.ts_ms, o.order_id, o.side, o.price, o.size,
                     o.strategy, o.edge_at_submit, o.binance_price, o.time_left_s,
                 ).ok();
+                // Fire-and-forget TG: never blocks CSV writes
                 if let Some(tg) = &tg {
-                    tg.send_order_alert(&o).await;
+                    let tg = tg.clone();
+                    let record = o.clone();
+                    tokio::spawn(async move { tg.send_order_alert(&record).await; });
                 }
             }
             TelemetryEvent::OrderResult(f) => {
@@ -106,8 +116,11 @@ pub async fn telemetry_writer(
                     f.submit_to_ack_ms,
                     f.pnl_if_correct.map_or("".to_string(), |p| format!("{:.4}", p)),
                 ).ok();
+                // Fire-and-forget TG
                 if let Some(tg) = &tg {
-                    tg.send_fill_alert(&f).await;
+                    let tg = tg.clone();
+                    let record = f.clone();
+                    tokio::spawn(async move { tg.send_fill_alert(&record).await; });
                 }
             }
             TelemetryEvent::MarketStart(m) => {
@@ -120,8 +133,11 @@ pub async fn telemetry_writer(
                     writeln!(f, "start_ms={}", m.start_ms).ok();
                     writeln!(f, "end_ms={}", m.end_ms).ok();
                 }
+                // Fire-and-forget TG
                 if let Some(tg) = &tg {
-                    tg.send_market_start(&m).await;
+                    let tg = tg.clone();
+                    let record = m.clone();
+                    tokio::spawn(async move { tg.send_market_start(&record).await; });
                 }
             }
             TelemetryEvent::StrategyMetrics(sm) => {
@@ -131,6 +147,12 @@ pub async fn telemetry_writer(
                     sm.strategy, sm.fill_count, sm.fill_rate,
                     sm.adverse_selection, sm.win_rate, sm.avg_edge,
                 );
+                // Fire-and-forget TG
+                if let Some(tg) = &tg {
+                    let tg = tg.clone();
+                    let record = sm.clone();
+                    tokio::spawn(async move { tg.send_strategy_metrics(&record).await; });
+                }
             }
             TelemetryEvent::MarketEnd(m) => {
                 eprintln!(
@@ -157,9 +179,21 @@ pub async fn telemetry_writer(
                     }
                 }
 
+                // Fire-and-forget TG
                 if let Some(tg) = &tg {
-                    tg.send_market_summary(&m).await;
+                    let tg = tg.clone();
+                    let record = m.clone();
+                    tokio::spawn(async move { tg.send_market_summary(&record).await; });
                 }
+            }
+            TelemetryEvent::RawClobResponse(r) => {
+                // Escape raw_json for CSV (double-quote any commas/newlines)
+                let escaped = r.raw_json.replace('"', "\"\"");
+                writeln!(
+                    clob_raw_csv.file,
+                    "{},{},{},\"{}\"",
+                    r.ts_ms, r.order_id, r.direction, escaped,
+                ).ok();
             }
         }
     }
@@ -169,5 +203,6 @@ pub async fn telemetry_writer(
     latency_csv.flush();
     orders_csv.flush();
     fills_csv.flush();
+    clob_raw_csv.flush();
     eprintln!("[TELEM] Writer stopped, files flushed");
 }

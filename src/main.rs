@@ -129,12 +129,21 @@ async fn main() {
             }
         });
 
-        // 8. Spawn order gateway
+        // 8. Spawn order gateway (with MarketContext for CLOB execution)
         let gw_feed_tx = feed_tx.clone();
         let gw_telem_tx = telem_tx.clone();
-        let dry_run = config.dry_run;
+        let gw_config = config.clone();
+        let (market_ctx_tx, market_ctx_rx) = tokio::sync::oneshot::channel::<MarketContext>();
         let gw_handle = tokio::spawn(async move {
-            order_gateway(order_rx, gw_feed_tx, gw_telem_tx, dry_run).await;
+            order_gateway(order_rx, gw_feed_tx, gw_telem_tx, market_ctx_rx, gw_config).await;
+        });
+
+        // Send market context to gateway (tick_size, neg_risk, token IDs)
+        let _ = market_ctx_tx.send(MarketContext {
+            up_token_id: market.up_token_id.clone(),
+            down_token_id: market.down_token_id.clone(),
+            tick_size: market.tick_size,
+            neg_risk: market.neg_risk,
         });
 
         // 9. Spawn telemetry writer

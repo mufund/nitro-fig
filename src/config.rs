@@ -165,6 +165,12 @@ pub struct Config {
 
     // Mode
     pub dry_run: bool,
+
+    // Polymarket CLOB credentials (live execution only)
+    pub polymarket_private_key: Option<String>,
+    pub polymarket_funder_address: Option<String>,
+    /// Signature type: 0=EOA, 1=Poly Proxy, 2=Gnosis Safe
+    pub polymarket_signature_type: u8,
 }
 
 impl Config {
@@ -264,6 +270,12 @@ impl Config {
             dry_run: std::env::var("DRY_RUN")
                 .map(|v| v == "1" || v.to_lowercase() == "true")
                 .unwrap_or(true),
+            polymarket_private_key: std::env::var("POLYMARKET_PRIVATE_KEY").ok(),
+            polymarket_funder_address: std::env::var("POLYMARKET_FUNDER_ADDRESS").ok(),
+            polymarket_signature_type: std::env::var("POLYMARKET_SIG_TYPE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
         }
     }
 

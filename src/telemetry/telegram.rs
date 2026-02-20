@@ -1,6 +1,7 @@
 use crate::types::*;
 
 /// Telegram Bot API client. Persistent connection pool via reqwest.
+#[derive(Clone)]
 pub struct TelegramClient {
     client: reqwest::Client,
     url: String,
@@ -129,6 +130,17 @@ impl TelegramClient {
             m.slug, m.strike, (m.end_ms - m.start_ms) / 1000,
         );
         self.send_html(&text).await;
+    }
+
+    pub async fn send_strategy_metrics(&self, sm: &StrategyMetricsRecord) {
+        let text = format!(
+            "📊 Strategy: {}\n\
+             Fills: {} | Rate: {:.1}% | WR: {:.1}%\n\
+             Adv sel: {:.3} | Avg edge: {:.4}",
+            sm.strategy, sm.fill_count, sm.fill_rate * 100.0,
+            sm.win_rate * 100.0, sm.adverse_selection, sm.avg_edge,
+        );
+        self.send_plain(&text).await;
     }
 
     pub async fn send_market_summary(&self, m: &MarketEndRecord) {

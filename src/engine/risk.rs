@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::engine::state::MarketState;
-use crate::types::{Fill, Order, OrderAck, Side, Signal};
+use crate::types::{Fill, Order, OrderAck, OrderType, Side, Signal};
 
 #[derive(Clone)]
 pub struct StrategyLimits {
@@ -208,6 +208,9 @@ impl StrategyRiskManager {
             signal_edge: signal.edge,
             is_passive: signal.is_passive,
             created_at: Instant::now(),
+            order_type: if signal.is_passive { OrderType::GTC } else { OrderType::FOK },
+            post_only: signal.is_passive,
+            token_id: String::new(), // set by LiveSink::on_order from MarketInfo
         })
     }
 

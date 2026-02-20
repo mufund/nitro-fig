@@ -151,6 +151,16 @@ fn parse_event_to_market_info(
         return Ok(None);
     }
 
+    // Extract tick size and neg_risk from market data
+    let tick_size = markets.iter()
+        .find_map(|m| m.get("minimum_tick_size")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok()))
+        .unwrap_or(0.01);
+    let neg_risk = event.get("neg_risk")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     Ok(Some(MarketInfo {
         slug: slug.to_string(),
         start_ms,
@@ -158,6 +168,8 @@ fn parse_event_to_market_info(
         up_token_id: up_token,
         down_token_id: down_token,
         strike: 0.0,
+        tick_size,
+        neg_risk,
     }))
 }
 

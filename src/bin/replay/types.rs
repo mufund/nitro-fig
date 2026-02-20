@@ -178,5 +178,8 @@ pub fn replay_config() -> Config {
         strategy_lp_extreme: true,
         strategy_cross_timeframe: false,
         dry_run: true,
+        polymarket_private_key: None,
+        polymarket_funder_address: None,
+        polymarket_signature_type: 0,
     }
 }

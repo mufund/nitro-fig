@@ -27,6 +27,8 @@ pub fn make_state(
         up_token_id: "up-token".to_string(),
         down_token_id: "down-token".to_string(),
         strike,
+        tick_size: 0.01,
+        neg_risk: false,
     };
 
     let oracle = OracleBasis::new(0.0, 2.0);
@@ -113,5 +115,8 @@ pub fn make_config() -> Config {
         strategy_lp_extreme: true,
         strategy_cross_timeframe: false,
         dry_run: true,
+        polymarket_private_key: None,
+        polymarket_funder_address: None,
+        polymarket_signature_type: 0,
     }
 }

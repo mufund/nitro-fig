@@ -80,6 +80,8 @@ fn new_market_state(info: &LoadedMarketInfo, strike: f64) -> MarketState {
             up_token_id: String::new(),
             down_token_id: String::new(),
             strike,
+            tick_size: 0.01,
+            neg_risk: false,
         },
         bs,
         oracle,
