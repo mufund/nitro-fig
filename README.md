@@ -40,6 +40,9 @@ DRY_RUN=false ./target/release/bot
 # One-time on-chain USDC.e + CTF approvals (required before first live trade)
 cargo run --release --bin approve
 
+# Auto-redeem all resolved positions (or set up as cron)
+cargo run --release --bin auto-redeem
+
 # Record 5 market cycles
 cargo run --release --bin recorder -- --cycles 5
 
@@ -68,6 +71,8 @@ cargo run --release --bin backtest -- --dump logs/1h
 |--------|---------|---------|
 | `bot` | `cargo run --release --bin bot` | Live trading / dry-run |
 | `approve` | `cargo run --release --bin approve` | One-time on-chain USDC.e + CTF approvals for all 3 Polymarket exchange contracts |
+| `redeem` | `cargo run --release --bin redeem -- <condition_id>` | Manually redeem a resolved market by condition ID |
+| `auto-redeem` | `cargo run --release --bin auto-redeem` | Auto-redeem all resolved positions (runs via cron every 30 min) |
 | `backtest` | `cargo run --release --bin backtest -- logs/1h` | Multi-market backtester with 8-tab TUI dashboard (or `--dump` for text mode) |
 | `backtester` | `cargo run --release --bin backtester [dir]` | Replay recorded CSVs through strategies, print signal/order summary (legacy) |
 | `recorder` | `cargo run --release --bin recorder -- --cycles N` | Record live Binance + Polymarket feeds to CSV (default: infinite cycles) |

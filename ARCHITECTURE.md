@@ -153,6 +153,8 @@ src/
     │   ├── types.rs               # TradeRecord, MarketResult, StrategyStats, BacktestApp (analytics)
     │   └── render.rs              # 8-tab TUI rendering (summary, strategies, markets, trades, equity, risk, timing, correlation)
     ├── approve.rs                 # One-time on-chain USDC.e + CTF approvals for Polymarket CLOB
+    ├── redeem.rs                  # Manual redemption of a resolved market by condition_id
+    ├── auto_redeem.rs             # Auto-redeem all resolved positions (cron every 30 min)
     ├── analyzer.rs                # Post-hoc analysis of recorded data
     └── ws_test.rs                 # WebSocket connectivity test
 ```
@@ -296,6 +298,8 @@ No lock overhead anywhere in the hot path.
 |---|---|---|
 | `bot` | `cargo run --release --bin bot` | Live trading / dry-run |
 | `approve` | `cargo run --release --bin approve` | One-time on-chain USDC.e + CTF approvals |
+| `redeem` | `cargo run --release --bin redeem -- <condition_id>` | Manual redemption by condition ID |
+| `auto-redeem` | `cargo run --release --bin auto-redeem` | Auto-redeem resolved positions (cron) |
 | `backtest` | `cargo run --release --bin backtest -- logs/1h` | Multi-market backtester with 8-tab TUI dashboard (or `--dump` for text) |
 | `backtester` | `cargo run --release --bin backtester [dir]` | Replay CSVs through strategies (legacy) |
 | `recorder` | `cargo run --release --bin recorder -- --cycles N` | Record live feeds to CSV |
@@ -353,7 +357,7 @@ The `replay` binary provides an interactive terminal interface for stepping thro
 Minimal — no `parking_lot`, no locks anywhere:
 
 - `tokio` — Async runtime (mpsc, watch, time, spawn)
-- `polymarket-client-sdk` — CLOB client, EIP-712 signing, alloy signer (with `clob` + `ctf` features)
+- `polymarket-client-sdk` — CLOB client, EIP-712 signing, CTF redemption, Data API positions (with `clob` + `ctf` + `data` features)
 - `reqwest` — HTTP (Gamma API, Telegram)
 - `tokio-tungstenite` — WebSocket (Binance + Polymarket CLOB)
 - `serde` / `serde_json` — JSON parsing

@@ -39,6 +39,14 @@ path = "src/bin/backtest/main.rs"
 name = "approve"
 path = "src/bin/approve.rs"
 
+[[bin]]
+name = "redeem"
+path = "src/bin/redeem.rs"
+
+[[bin]]
+name = "auto-redeem"
+path = "src/bin/auto_redeem.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -49,7 +57,7 @@ chrono = "0.4"
 futures-util = "0.3"
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"
-polymarket-client-sdk = { version = "0.4", features = ["clob", "ctf"] }
+polymarket-client-sdk = { version = "0.4", features = ["clob", "ctf", "data"] }
 dotenvy = "0.15"
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 alloy = { version = "1.5", default-features = false, features = ["sol-types", "contract", "providers", "signer-local", "signers", "reqwest-rustls-tls"] }

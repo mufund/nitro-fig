@@ -418,4 +418,16 @@ ps aux | grep bot
 
 # Stop the bot
 pkill -f "target/release/bot"
+
+# Auto-redeem: check cron log
+cat /root/nitro-fig/logs/redeem.log
+
+# Auto-redeem: run manually
+cd /root/nitro-fig && ./target/release/auto-redeem
+
+# Manual redeem by condition_id
+./target/release/redeem 0x571a3c90...
+
+# Check cron is installed
+crontab -l
 ```

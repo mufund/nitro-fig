@@ -15,6 +15,8 @@
 | `.env` config | `/root/nitro-fig/.env` |
 | Release binary | `/root/nitro-fig/target/release/bot` |
 | Approve binary | `/root/nitro-fig/target/release/approve` |
+| Auto-redeem binary | `/root/nitro-fig/target/release/auto-redeem` |
+| Redeem log | `/root/nitro-fig/logs/redeem.log` |
 | Start script | `/root/nitro-fig/start.sh` |
 | Log directory | `/root/nitro-fig/logs/` |
 | Latest log symlink | `/root/nitro-fig/logs/latest.log` |
@@ -236,6 +238,33 @@ cargo run --release --bin approve
 This approves USDC.e (ERC-20) and Conditional Tokens (ERC-1155) for all 3 Polymarket exchange contracts (CTF Exchange, Neg-Risk Exchange, Neg-Risk Adapter). Only needed once per wallet.
 
 Also fund the wallet with USDC.e on Polygon. The gateway checks the balance at startup and logs a warning if it is zero. Orders are locally rejected if insufficient USDC is available.
+
+## Auto-Redemption (Cron)
+
+Winning positions must be redeemed on-chain after the UMA oracle finalizes (~2-4 hours post-market). The `auto-redeem` binary handles this automatically via cron:
+
+```bash
+# Manual test run
+cd /root/nitro-fig && ./target/release/auto-redeem
+
+# Install cron (every 30 minutes)
+crontab -e
+# Add:
+*/30 * * * * cd /root/nitro-fig && ./target/release/auto-redeem >> logs/redeem.log 2>&1
+```
+
+**How it works:**
+1. Queries the Polymarket Data API for all redeemable positions (`positions?user=...&redeemable=true`)
+2. Deduplicates by condition_id (Up + Down tokens share the same condition)
+3. Calls the CTF contract's `redeemPositions()` to burn winning tokens and recover USDC.e
+4. Sends a Telegram alert for each successful redemption
+5. Exits silently when nothing to redeem
+
+Reads `POLYMARKET_PRIVATE_KEY`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_CHAT_ID` from `.env`. Completely decoupled from the bot — no shared state, no interference with the trading hot path.
+
+Check redemption history: `cat /root/nitro-fig/logs/redeem.log`
+
+For manual one-off redemption by condition ID: `./target/release/redeem <condition_id_hex>`
 
 ## Notes
 
