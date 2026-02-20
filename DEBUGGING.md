@@ -128,7 +128,7 @@ grep TG /root/nitro-fig/logs/latest.log
 Every 10 seconds the engine logs a `[DIAG]` block. Here is a real example with every field explained:
 
 ```
-[DIAG] t_left=134s σ=0.00006569 z=-0.13 dist=$-7 dist_frac=0.00010 regime=Range(52%/196) house=Some(Up) up_ask=0.990 down_ask=0.990 S=69068.99 K=69076
+[DIAG] t_left=134s σ=0.00006569 z=-0.13 dist=$-7 dist_frac=0.00010 regime=Range(52%/196) house=Some(Up) port_Δ=0.0142 port_Γ=-0.000089 n_pos=2 up_ask=0.990 down_ask=0.990 S=69068.99 K=69076
 [DIAG]   certainty_capture: z_abs=0.13 fair=0.553 ask=0.990 edge=-0.437 → z<1.5
 [DIAG]   convexity_fade: regime=Range dist_frac=0.00010 → PASS(regime+dist)
 [DIAG]   lp_extreme: z_abs=0.13 losing_side=Up ask=0.990 regime=Range → z<1.5
@@ -146,6 +146,9 @@ Every 10 seconds the engine logs a `[DIAG]` block. Here is a real example with e
 | `dist_frac` | `0.00010` | Absolute fractional distance: `|S - K| / K`. Here 0.01% of the strike price |
 | `regime` | `Range(52%/196)` | Tick direction regime. `Range` means dominant_frac < 60%. The `52%` is the fraction of direction-changing ticks going the same way, out of `196` total ticks in the 30s window |
 | `house` | `Some(Up)` | Current side coherence direction. First active order set the house to Up. All subsequent active orders must agree. `None` means no orders dispatched yet |
+| `port_Δ` | `0.0142` | Aggregate portfolio delta across all fills. Positive means net long Up exposure. Recomputed on every Binance trade |
+| `port_Γ` | `-0.000089` | Aggregate portfolio gamma. Negative gamma means curvature risk (stacked same-side fills near ATM). Recomputed on every Binance trade |
+| `n_pos` | `2` | Number of filled positions in the current market. Zero means no fills yet |
 | `up_ask` | `0.990` | Best Polymarket ask price for Up tokens. `0.990` typically means stale or no real liquidity (near max price) |
 | `down_ask` | `0.990` | Best Polymarket ask price for Down tokens. Both at 0.990 means the PM order book is empty or stale |
 | `S` | `69068.99` | Oracle-adjusted spot price estimate: `binance_price + beta` (beta defaults to 0) |
@@ -364,6 +367,8 @@ Current per-strategy limits from `risk.rs` (based on $1000 bankroll):
 - Daily loss halt: -3% of bankroll = -$30
 - Weekly loss halt: -8% of bankroll = -$80
 - Stale feed rejection: 1s threshold (either Binance or Polymarket)
+- Portfolio delta limit: `MAX_PORTFOLIO_DELTA` (default 0.0 = disabled)
+- Portfolio neg. gamma limit: `MAX_PORTFOLIO_GAMMA_NEG` (default 0.0 = disabled)
 
 **Sizing flow**: `signal.size_frac * bankroll` -> capped by per-trade limit -> capped by strategy room (total cap - current exposure) -> capped by portfolio room ($150 - total exposure) -> minimum $1.
 

@@ -49,6 +49,8 @@ All variables can be set via a `.env` file in the project root (loaded by `doten
 | `MAX_EXPOSURE_FRAC` | `0.15` | Max portfolio exposure as fraction of bankroll |
 | `DAILY_LOSS_HALT` | `-0.03` | Daily loss fraction that triggers halt |
 | `WEEKLY_LOSS_HALT` | `-0.08` | Weekly loss fraction that triggers halt |
+| `MAX_PORTFOLIO_DELTA` | `0.0` | Portfolio delta limit (0.0 = disabled) |
+| `MAX_PORTFOLIO_GAMMA_NEG` | `0.0` | Portfolio negative gamma limit (0.0 = disabled) |
 
 **Model:**
 

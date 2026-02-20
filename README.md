@@ -14,7 +14,7 @@ Trades BTC/ETH/SOL/XRP up/down binary markets (5m, 15m, 1h, 4h intervals) on Pol
 - **Persistent Binance state** -- EWMA volatility, VWAP, and regime classifier carry across market cycles. Per-market warmup gate requires 10 fresh EWMA samples before trading.
 - **Binary settlement PnL** -- correct accounting at market end, not at fill time
 - **Side coherence** -- active strategies agree on a directional house view; passive LP is exempt
-- **Two-tier risk** -- per-strategy limits (size, cooldown, order caps) plus portfolio-level exposure and loss halts
+- **Two-tier risk** -- per-strategy limits (size, cooldown, order caps) plus portfolio-level exposure, loss halts, and optional delta/gamma gates
 - **Telegram alerts** -- order submissions, fills, market start/end summaries, strategy metrics, and locally-rejected orders (e.g. insufficient balance)
 - **`.env` file support** -- configuration via `.env` file (loaded by `dotenvy`) or environment variables
 - **Interactive replay TUI** -- step through recorded market data tick-by-tick with live orderbook, BTC/PM charts, strategy signals, and CSV export
@@ -188,7 +188,7 @@ All orders are limit orders submitted via the SDK's `limit_order()` builder. Ord
 
 ## Test Coverage
 
-269 unit tests across all modules including:
+278 unit tests across all modules including:
 - Strategy evaluation correctness and edge cases
 - Risk management gate chain (10 sequential gates)
 - Math library (pricing, EWMA, VWAP, regime, normal distribution)

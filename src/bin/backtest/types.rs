@@ -23,6 +23,9 @@ pub struct TradeRecord {
     pub sigma_at_signal: f64,
     pub z_at_signal: f64,
     pub distance_at_signal: f64,
+    // Greeks at fill time
+    pub delta_at_fill: f64,
+    pub gamma_at_fill: f64,
     // Settlement
     pub outcome: Option<Side>,
     pub pnl: f64,

@@ -496,11 +496,11 @@ This is the only correct way to account for binary option PnL. Earlier versions 
 Every 10 seconds, the engine logs a `[DIAG]` block showing:
 
 ```
-[DIAG] t_left=241s sigma=0.00009092 z=0.00 dist=$0 dist_frac=0.00000 regime=Ambiguous(73%/251) house=None
+[DIAG] t_left=241s sigma=0.00009092 z=0.00 dist=$0 dist_frac=0.00000 regime=Ambiguous(73%/251) house=None port_Δ=0.0000 port_Γ=0.000000 n_pos=0
 [DIAG]   certainty_capture: z_abs=0.00 fair=0.500 ask=0.990 edge=-0.490 -> z<1.5
 [DIAG]   convexity_fade: regime=Ambiguous dist_frac=0.00000 -> PASS(regime+dist)
 [DIAG]   lp_extreme: z_abs=0.00 losing_side=Down ask=0.990 regime=Ambiguous -> z<1.5
 [DIAG]   strike_misalign: elapsed=10649ms -> in_window
 ```
 
-For each strategy, it shows the specific gate condition that blocks it (or PASS if it would fire). The regime line now includes the dominant tick fraction and total tick count (e.g., `Ambiguous(73%/251)` means 73% of 251 direction-changing ticks went the same way).
+For each strategy, it shows the specific gate condition that blocks it (or PASS if it would fire). The regime line now includes the dominant tick fraction and total tick count (e.g., `Ambiguous(73%/251)` means 73% of 251 direction-changing ticks went the same way). The header also shows portfolio-level Greeks: `port_Δ` (aggregate delta), `port_Γ` (aggregate gamma), and `n_pos` (number of filled positions).

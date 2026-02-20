@@ -14,6 +14,7 @@ use polymarket_crypto::strategies::cross_timeframe::CrossTimeframe;
 use polymarket_crypto::strategies::latency_arb::LatencyArb;
 use polymarket_crypto::strategies::lp_extreme::LpExtreme;
 use polymarket_crypto::strategies::strike_misalign::StrikeMisalign;
+use polymarket_crypto::math::pricing::{delta_bin, gamma_bin};
 use polymarket_crypto::strategies::{evaluate_filtered, Strategy};
 use polymarket_crypto::types::*;
 
@@ -90,6 +91,8 @@ pub fn backtest_config() -> Config {
         oracle_delta_s: 2.0,
         ewma_lambda: 0.94,
         sigma_floor_annual: 0.30,
+        max_portfolio_delta: 0.0,
+        max_portfolio_gamma_neg: 0.0,
         strategy_latency_arb: true,
         strategy_certainty_capture: true,
         strategy_convexity_fade: true,
@@ -334,6 +337,8 @@ impl<'a> SignalSink for BacktestSink<'a> {
             sigma_at_signal: sigma,
             z_at_signal: z,
             distance_at_signal: (s - k).abs(),
+            delta_at_fill: delta_bin(s, k, sigma, tau),
+            gamma_at_fill: gamma_bin(s, k, sigma, tau),
             outcome: None,
             pnl: 0.0,
             won: false,
@@ -427,6 +432,7 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
         }
 
         // Shared signal pipeline: deconfliction, sorting, risk check, fill simulation
+        let fills_before = fills.len();
         {
             let config = ProcessConfig::backtest();
             let mut sink = BacktestSink {
@@ -439,6 +445,16 @@ pub fn run_market(data_dir: &str, market_idx: usize, risk: &mut StrategyRiskMana
                 &mut signal_buf, &mut state, risk,
                 &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
                 &config, &mut sink,
+            );
+        }
+        // Update portfolio Greeks for any new fills
+        for fill in &fills[fills_before..] {
+            risk.greeks.on_fill(fill.side, fill.size);
+        }
+        if fills.len() > fills_before {
+            risk.greeks.recompute(
+                state.s_est(), state.info.strike,
+                state.sigma_real(), state.tau_eff_s(now_ms),
             );
         }
         signal_buf.clear();

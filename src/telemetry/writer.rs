@@ -38,7 +38,7 @@ pub async fn telemetry_writer(
     fs::create_dir_all(&dir).ok();
 
     let signals_header = format!(
-        "ts_ms,strategy,side,edge,fair,mkt,conf,size_frac,{},dist,time_left_s,eval_us,selected",
+        "ts_ms,strategy,side,edge,fair,mkt,conf,size_frac,{},dist,time_left_s,eval_us,selected,sig_delta,sig_gamma,port_delta,port_gamma",
         config.asset
     );
     let mut signals_csv = CsvWriter::new(
@@ -78,11 +78,13 @@ pub async fn telemetry_writer(
             TelemetryEvent::Signal(s) => {
                 writeln!(
                     signals_csv.file,
-                    "{},{},{:?},{:.4},{:.4},{:.4},{:.4},{:.4},{:.2},{:.2},{:.1},{},{}",
+                    "{},{},{:?},{:.4},{:.4},{:.4},{:.4},{:.4},{:.2},{:.2},{:.1},{},{},{:.6},{:.6},{:.6},{:.6}",
                     s.ts_ms, s.strategy, s.side, s.edge, s.fair_value, s.market_price,
                     s.confidence, s.size_frac, s.binance_price, s.distance,
                     s.time_left_s, s.eval_latency_us,
                     if s.selected { 1 } else { 0 },
+                    s.signal_delta, s.signal_gamma,
+                    s.portfolio_delta, s.portfolio_gamma,
                 ).ok();
             }
             TelemetryEvent::Latency(l) => {

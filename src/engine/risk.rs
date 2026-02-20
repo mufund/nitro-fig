@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::engine::state::MarketState;
+use crate::math::pricing::{delta_bin, gamma_bin};
 use crate::types::{Fill, Order, OrderAck, OrderType, Side, Signal};
 
 #[derive(Clone)]
@@ -29,6 +30,80 @@ impl StrategyRiskState {
     }
 }
 
+// ─── Portfolio Greeks ─────────────────────────────────────────────────────────
+
+/// Per-fill record for Greeks recomputation as market conditions change.
+#[derive(Clone)]
+struct FillGreeksRecord {
+    side: Side,
+    size: f64,
+}
+
+/// Aggregate portfolio Greeks snapshot.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PortfolioGreeks {
+    pub delta: f64,
+    pub gamma: f64,
+    pub n_positions: u32,
+}
+
+/// Tracks fills and recomputes aggregate Greeks on demand.
+///
+/// All fills in a market share the same (S, K, sigma, tau) since it's one binary
+/// option. `delta_bin` and `gamma_bin` are computed once per recompute, then scaled
+/// by `sign * size` per fill. Cost: 2 function calls + N multiply-accumulates.
+pub struct GreeksTracker {
+    positions: Vec<FillGreeksRecord>,
+    /// Cached snapshot — recomputed on `recompute()`.
+    pub snapshot: PortfolioGreeks,
+}
+
+impl GreeksTracker {
+    pub fn new() -> Self {
+        Self {
+            positions: Vec::with_capacity(16),
+            snapshot: PortfolioGreeks::default(),
+        }
+    }
+
+    /// Record a new fill. Call `recompute()` after to update the snapshot.
+    pub fn on_fill(&mut self, side: Side, size: f64) {
+        self.positions.push(FillGreeksRecord { side, size });
+        self.snapshot.n_positions = self.positions.len() as u32;
+    }
+
+    /// Recompute aggregate Greeks at current market conditions.
+    /// Called on every Binance trade (when positions exist) and after every fill.
+    pub fn recompute(&mut self, s: f64, k: f64, sigma: f64, tau: f64) {
+        let unit_delta = delta_bin(s, k, sigma, tau);
+        let unit_gamma = gamma_bin(s, k, sigma, tau);
+
+        let mut total_delta = 0.0;
+        let mut total_gamma = 0.0;
+
+        for pos in &self.positions {
+            let sign = match pos.side {
+                Side::Up => 1.0,
+                Side::Down => -1.0,
+            };
+            total_delta += sign * pos.size * unit_delta;
+            total_gamma += sign * pos.size * unit_gamma;
+        }
+
+        self.snapshot = PortfolioGreeks {
+            delta: total_delta,
+            gamma: total_gamma,
+            n_positions: self.positions.len() as u32,
+        };
+    }
+
+    /// Reset at market end.
+    pub fn reset(&mut self) {
+        self.positions.clear();
+        self.snapshot = PortfolioGreeks::default();
+    }
+}
+
 /// Two-tier risk manager: per-strategy limits + portfolio-level caps.
 /// Each strategy operates independently — one hitting its cap does not block others.
 pub struct StrategyRiskManager {
@@ -44,6 +119,11 @@ pub struct StrategyRiskManager {
     pub weekly_pnl: f64,
     weekly_loss_halt_frac: f64,
     pub halted_until_ms: i64,
+
+    // Portfolio Greeks
+    pub greeks: GreeksTracker,
+    max_portfolio_delta: f64,
+    max_portfolio_gamma_neg: f64,
 }
 
 impl StrategyRiskManager {
@@ -125,6 +205,9 @@ impl StrategyRiskManager {
             weekly_pnl: 0.0,
             weekly_loss_halt_frac: config.weekly_loss_halt_frac,
             halted_until_ms: 0,
+            greeks: GreeksTracker::new(),
+            max_portfolio_delta: config.max_portfolio_delta,
+            max_portfolio_gamma_neg: config.max_portfolio_gamma_neg,
         }
     }
 
@@ -159,6 +242,20 @@ impl StrategyRiskManager {
         // 5. Portfolio-level exposure check
         let max_portfolio = self.max_total_exposure_frac * self.bankroll;
         if self.total_exposure >= max_portfolio {
+            return None;
+        }
+
+        // 5b. Portfolio delta limit (0.0 = disabled)
+        if self.max_portfolio_delta > 0.0
+            && self.greeks.snapshot.delta.abs() > self.max_portfolio_delta
+        {
+            return None;
+        }
+
+        // 5c. Portfolio negative gamma limit (0.0 = disabled)
+        if self.max_portfolio_gamma_neg > 0.0
+            && self.greeks.snapshot.gamma < -self.max_portfolio_gamma_neg
+        {
             return None;
         }
 
@@ -259,6 +356,7 @@ impl StrategyRiskManager {
         self.weekly_pnl += market_pnl;
         // Reset per-market exposure for next market
         self.total_exposure = 0.0;
+        self.greeks.reset();
         for s in self.state.values_mut() {
             *s = StrategyRiskState::new();
         }
@@ -703,5 +801,155 @@ mod tests {
         let signal_cc = make_signal("certainty_capture", 0.05, 0.50, 0.01);
         assert!(risk.check_strategy(&signal_cc, &state, 3, now).is_some(),
             "Certainty capture should not be blocked by latency_arb cap");
+    }
+
+    // ── Portfolio Greeks tests ──
+
+    /// Scenario: Fresh GreeksTracker with no fills.
+    /// Expected: Snapshot is all zeros.
+    #[test]
+    fn test_greeks_tracker_empty() {
+        let tracker = GreeksTracker::new();
+        assert_eq!(tracker.snapshot.delta, 0.0);
+        assert_eq!(tracker.snapshot.gamma, 0.0);
+        assert_eq!(tracker.snapshot.n_positions, 0);
+    }
+
+    /// Scenario: One UP fill of $10, recomputed at ATM (S=K=100000).
+    /// Expected: Portfolio delta is positive (long the binary call).
+    #[test]
+    fn test_greeks_tracker_single_up_fill() {
+        let mut tracker = GreeksTracker::new();
+        tracker.on_fill(Side::Up, 10.0);
+        // ATM with sigma=0.001/s, tau=300s
+        tracker.recompute(100_000.0, 100_000.0, 0.001, 300.0);
+        assert!(tracker.snapshot.delta > 0.0,
+            "UP fill should produce positive delta: {}", tracker.snapshot.delta);
+        assert_eq!(tracker.snapshot.n_positions, 1);
+    }
+
+    /// Scenario: Equal-size UP and DOWN fills ($10 each), recomputed at ATM.
+    /// Expected: Delta and gamma cancel to near-zero (opposing positions).
+    #[test]
+    fn test_greeks_tracker_opposing_fills_cancel() {
+        let mut tracker = GreeksTracker::new();
+        tracker.on_fill(Side::Up, 10.0);
+        tracker.on_fill(Side::Down, 10.0);
+        tracker.recompute(100_000.0, 100_000.0, 0.001, 300.0);
+        assert!(tracker.snapshot.delta.abs() < 1e-12,
+            "Opposing fills should cancel delta: {}", tracker.snapshot.delta);
+        assert!(tracker.snapshot.gamma.abs() < 1e-12,
+            "Opposing fills should cancel gamma: {}", tracker.snapshot.gamma);
+        assert_eq!(tracker.snapshot.n_positions, 2);
+    }
+
+    /// Scenario: One UP fill, recompute at S=100000 then at S=100500.
+    /// Expected: Delta changes because delta_bin is a function of spot price.
+    #[test]
+    fn test_greeks_tracker_recompute_varies_with_s() {
+        let mut tracker = GreeksTracker::new();
+        tracker.on_fill(Side::Up, 10.0);
+
+        tracker.recompute(100_000.0, 100_000.0, 0.001, 300.0);
+        let delta_at_atm = tracker.snapshot.delta;
+
+        tracker.recompute(100_500.0, 100_000.0, 0.001, 300.0);
+        let delta_itm = tracker.snapshot.delta;
+
+        assert!((delta_at_atm - delta_itm).abs() > 1e-10,
+            "Delta should change with S: atm={} itm={}", delta_at_atm, delta_itm);
+    }
+
+    /// Scenario: Add a fill, recompute, then reset.
+    /// Expected: After reset, snapshot is all zeros and positions vec is empty.
+    #[test]
+    fn test_greeks_tracker_reset_clears() {
+        let mut tracker = GreeksTracker::new();
+        tracker.on_fill(Side::Up, 10.0);
+        tracker.recompute(100_000.0, 100_000.0, 0.001, 300.0);
+        assert!(tracker.snapshot.delta != 0.0, "Should have nonzero delta before reset");
+
+        tracker.reset();
+        assert_eq!(tracker.snapshot.delta, 0.0);
+        assert_eq!(tracker.snapshot.gamma, 0.0);
+        assert_eq!(tracker.snapshot.n_positions, 0);
+    }
+
+    /// Scenario: max_portfolio_delta set to a tiny value; delta pushed past it via greeks.recompute.
+    /// Expected: check_strategy returns None (gate 5b blocks).
+    #[test]
+    fn test_delta_limit_blocks_order() {
+        let mut config = make_config();
+        config.max_portfolio_delta = 0.0001; // very tight limit
+        let mut risk = StrategyRiskManager::new(&config);
+        let (state, now) = make_state(95_000.0, 95_500.0, 0.001, 120.0, 0.50, 0.50);
+
+        // Simulate a fill that pushes delta past the limit
+        risk.greeks.on_fill(Side::Up, 100.0);
+        risk.greeks.recompute(95_500.0, 95_000.0, 0.001, 120.0);
+        assert!(risk.greeks.snapshot.delta.abs() > 0.0001,
+            "Delta should exceed limit: {}", risk.greeks.snapshot.delta);
+
+        let signal = make_signal("latency_arb", 0.05, 0.50, 0.01);
+        assert!(risk.check_strategy(&signal, &state, 1, now).is_none(),
+            "Should be blocked by portfolio delta limit");
+    }
+
+    /// Scenario: max_portfolio_gamma_neg set to a small value; gamma made sufficiently negative.
+    /// Expected: check_strategy returns None (gate 5c blocks).
+    #[test]
+    fn test_gamma_limit_blocks_order() {
+        let mut config = make_config();
+        config.max_portfolio_gamma_neg = 1e-12; // very tight limit
+        let mut risk = StrategyRiskManager::new(&config);
+        let (state, now) = make_state(95_000.0, 95_500.0, 0.001, 120.0, 0.50, 0.50);
+
+        // Deep ITM: gamma_bin is negative. UP fill with positive sign * negative gamma = negative.
+        // Actually, for S > K (ITM), gamma_bin is negative.
+        // UP fill: sign=+1, so total_gamma = +1 * size * gamma_bin (negative) = negative.
+        risk.greeks.on_fill(Side::Up, 100.0);
+        risk.greeks.recompute(100_000.0, 95_000.0, 0.001, 120.0);
+        assert!(risk.greeks.snapshot.gamma < 0.0,
+            "ITM UP fill should produce negative portfolio gamma: {}", risk.greeks.snapshot.gamma);
+
+        let signal = make_signal("latency_arb", 0.05, 0.50, 0.01);
+        assert!(risk.check_strategy(&signal, &state, 1, now).is_none(),
+            "Should be blocked by portfolio gamma limit");
+    }
+
+    /// Scenario: Greeks limits at default (0.0 = disabled), with active fills.
+    /// Expected: check_strategy still approves (limits disabled by default).
+    #[test]
+    fn test_greeks_limits_disabled_by_default() {
+        let config = make_config();
+        let mut risk = StrategyRiskManager::new(&config);
+        let (state, now) = make_state(95_000.0, 95_500.0, 0.001, 120.0, 0.50, 0.50);
+
+        // Add a fill with nonzero Greeks
+        risk.greeks.on_fill(Side::Up, 100.0);
+        risk.greeks.recompute(95_500.0, 95_000.0, 0.001, 120.0);
+        assert!(risk.greeks.snapshot.delta.abs() > 0.0, "Should have nonzero delta");
+
+        // Default limits are 0.0 = disabled, so order should pass
+        let signal = make_signal("latency_arb", 0.05, 0.50, 0.01);
+        assert!(risk.check_strategy(&signal, &state, 1, now).is_some(),
+            "Order should pass when Greeks limits are disabled (0.0)");
+    }
+
+    /// Scenario: settle_market resets Greeks tracker.
+    /// Expected: After settlement, greeks snapshot is zeroed out.
+    #[test]
+    fn test_settle_resets_greeks() {
+        let config = make_config();
+        let mut risk = StrategyRiskManager::new(&config);
+
+        risk.greeks.on_fill(Side::Up, 10.0);
+        risk.greeks.recompute(100_000.0, 100_000.0, 0.001, 300.0);
+        assert!(risk.greeks.snapshot.n_positions > 0);
+
+        risk.settle_market(Side::Up, &[]);
+        assert_eq!(risk.greeks.snapshot.n_positions, 0, "Greeks should reset after settle");
+        assert_eq!(risk.greeks.snapshot.delta, 0.0);
+        assert_eq!(risk.greeks.snapshot.gamma, 0.0);
     }
 }

@@ -4,10 +4,10 @@ use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::engine::pipeline::{self, ProcessConfig, SignalSink};
-use crate::engine::risk::StrategyRiskManager;
+use crate::engine::risk::{PortfolioGreeks, StrategyRiskManager};
 use crate::engine::state::{BinanceState, MarketState};
 use crate::math::oracle::OracleBasis;
-use crate::math::pricing::z_score;
+use crate::math::pricing::{delta_bin, gamma_bin, z_score};
 use crate::math::regime::Regime;
 use crate::strategies::evaluate_filtered;
 use crate::strategies::latency_arb::LatencyArb;
@@ -28,6 +28,8 @@ struct LiveSink<'a> {
     /// Per-batch eval latency (for telemetry records).
     eval_us: u64,
     dispatched: bool,
+    /// Snapshot of portfolio Greeks at signal evaluation time.
+    portfolio_greeks: PortfolioGreeks,
 }
 
 impl<'a> LiveSink<'a> {
@@ -36,6 +38,7 @@ impl<'a> LiveSink<'a> {
         telem_tx: &'a mpsc::Sender<TelemetryEvent>,
         order_strategies: &'a mut HashMap<u64, (&'static str, Side)>,
         eval_us: u64,
+        portfolio_greeks: PortfolioGreeks,
     ) -> Self {
         Self {
             order_tx,
@@ -43,6 +46,7 @@ impl<'a> LiveSink<'a> {
             order_strategies,
             eval_us,
             dispatched: false,
+            portfolio_greeks,
         }
     }
 }
@@ -51,6 +55,12 @@ impl<'a> SignalSink for LiveSink<'a> {
     fn on_signal(&mut self, sig: &Signal, state: &MarketState, now_ms: i64) {
         let time_left_s = state.time_left_s(now_ms);
         let distance = state.distance();
+
+        let s = state.s_est();
+        let k = state.info.strike;
+        let sigma = state.sigma_real();
+        let tau = state.tau_eff_s(now_ms);
+
         let _ = self.telem_tx.try_send(TelemetryEvent::Signal(SignalRecord {
             ts_ms: now_ms,
             strategy: sig.strategy.to_string(),
@@ -65,6 +75,10 @@ impl<'a> SignalSink for LiveSink<'a> {
             time_left_s,
             eval_latency_us: self.eval_us,
             selected: false,
+            signal_delta: delta_bin(s, k, sigma, tau),
+            signal_gamma: gamma_bin(s, k, sigma, tau),
+            portfolio_delta: self.portfolio_greeks.delta,
+            portfolio_gamma: self.portfolio_greeks.gamma,
         }));
     }
 
@@ -216,6 +230,15 @@ pub async fn run_engine(
                 let recv_latency_us = recv_at.elapsed().as_micros() as u64;
                 state.on_binance_trade(t);
 
+                // Recompute portfolio Greeks at new spot price
+                if risk.greeks.snapshot.n_positions > 0 {
+                    let s = state.s_est();
+                    let k = state.info.strike;
+                    let sigma = state.sigma_real();
+                    let tau = state.tau_eff_s(now_ms);
+                    risk.greeks.recompute(s, k, sigma, tau);
+                }
+
                 let _ = telem_tx.try_send(TelemetryEvent::Latency(LatencyRecord {
                     ts_ms: now_ms,
                     event: "binance_recv",
@@ -243,7 +266,7 @@ pub async fn run_engine(
                     if !open_buf.is_empty() {
                         let eval_us = eval_start.elapsed().as_micros() as u64;
                         let config = ProcessConfig::live();
-                        let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                        let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us, risk.greeks.snapshot);
                         pipeline::process_signals(
                             &mut open_buf, &mut state, &mut risk,
                             &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
@@ -278,7 +301,7 @@ pub async fn run_engine(
                 // ── Periodic diagnostic log (every 10s) ──
                 if now_ms - last_diag_ms >= 10_000 {
                     last_diag_ms = now_ms;
-                    log_strategy_diagnostics(&state, now_ms, &house_side);
+                    log_strategy_diagnostics(&state, now_ms, &house_side, &risk.greeks.snapshot);
                 }
 
                 // ── Evaluate Binance-triggered strategies ──
@@ -294,7 +317,7 @@ pub async fn run_engine(
 
                 {
                     let config = ProcessConfig::live();
-                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us, risk.greeks.snapshot);
                     pipeline::process_signals(
                         &mut signals_buf, &mut state, &mut risk,
                         &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
@@ -333,7 +356,7 @@ pub async fn run_engine(
                         if !open_buf.is_empty() {
                             let eval_us = 0u64;
                             let config = ProcessConfig::live();
-                            let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                            let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us, risk.greeks.snapshot);
                             pipeline::process_signals(
                                 &mut open_buf, &mut state, &mut risk,
                                 &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
@@ -366,7 +389,7 @@ pub async fn run_engine(
 
                 {
                     let config = ProcessConfig::live();
-                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us, risk.greeks.snapshot);
                     pipeline::process_signals(
                         &mut signals_buf, &mut state, &mut risk,
                         &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
@@ -397,7 +420,7 @@ pub async fn run_engine(
                         if !open_buf.is_empty() {
                             let eval_us = 0u64;
                             let config = ProcessConfig::live();
-                            let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                            let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us, risk.greeks.snapshot);
                             pipeline::process_signals(
                                 &mut open_buf, &mut state, &mut risk,
                                 &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
@@ -430,7 +453,7 @@ pub async fn run_engine(
 
                 {
                     let config = ProcessConfig::live();
-                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us);
+                    let mut sink = LiveSink::new(&order_tx, &telem_tx, &mut order_strategies, eval_us, risk.greeks.snapshot);
                     pipeline::process_signals(
                         &mut signals_buf, &mut state, &mut risk,
                         &mut house_side, &mut flip_count, &mut next_order_id, now_ms,
@@ -483,6 +506,13 @@ pub async fn run_engine(
                                 price,
                                 size,
                             });
+
+                            // Update portfolio Greeks
+                            risk.greeks.on_fill(order_side, size);
+                            risk.greeks.recompute(
+                                state.s_est(), state.info.strike,
+                                state.sigma_real(), state.tau_eff_s(now_ms),
+                            );
                         }
 
                         for (&key, stats) in state.strategy_stats.iter_mut() {
@@ -596,7 +626,7 @@ pub async fn run_engine(
 }
 
 /// Periodic diagnostic: log internal values for each strategy to understand why they fire or don't.
-fn log_strategy_diagnostics(state: &MarketState, now_ms: i64, house_side: &Option<Side>) {
+fn log_strategy_diagnostics(state: &MarketState, now_ms: i64, house_side: &Option<Side>, greeks: &PortfolioGreeks) {
     let sigma = state.sigma_real();
     let s = state.s_est();
     let k = state.info.strike;
@@ -613,11 +643,12 @@ fn log_strategy_diagnostics(state: &MarketState, now_ms: i64, house_side: &Optio
 
     eprintln!(
         "[DIAG] t_left={:.0}s σ={:.8} z={:.2} dist=${:.0} dist_frac={:.5} regime={:?}({:.0}%/{}) house={:?} \
-         up_ask={:.3} down_ask={:.3} S={:.2} K={:.0}",
+         up_ask={:.3} down_ask={:.3} S={:.2} K={:.0} port_Δ={:.4} port_Γ={:.6} n_pos={}",
         tau, sigma, z, dist, dist_frac, regime,
         state.bn.regime.dominant_frac() * 100.0, state.bn.regime.total_ticks(),
         house_side,
         state.up_ask, state.down_ask, s, k,
+        greeks.delta, greeks.gamma, greeks.n_positions,
     );
 
     // Per-strategy gate analysis

@@ -155,6 +155,10 @@ pub struct Config {
     /// Prevents the model from becoming overconfident during low-vol periods.
     pub sigma_floor_annual: f64,
 
+    // Portfolio Greeks limits (0.0 = disabled)
+    pub max_portfolio_delta: f64,
+    pub max_portfolio_gamma_neg: f64,
+
     // Strategy toggles — set to false to disable individual strategies
     pub strategy_latency_arb: bool,
     pub strategy_certainty_capture: bool,
@@ -249,6 +253,14 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.30),
+            max_portfolio_delta: std::env::var("MAX_PORTFOLIO_DELTA")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
+            max_portfolio_gamma_neg: std::env::var("MAX_PORTFOLIO_GAMMA_NEG")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
             strategy_latency_arb: std::env::var("STRAT_LATENCY_ARB")
                 .map(|v| v != "0" && v.to_lowercase() != "false")
                 .unwrap_or(true),

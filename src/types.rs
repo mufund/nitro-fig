@@ -216,6 +216,12 @@ pub struct SignalRecord {
     pub time_left_s: f64,
     pub eval_latency_us: u64,
     pub selected: bool,
+    // Per-signal Greeks at evaluation time
+    pub signal_delta: f64,
+    pub signal_gamma: f64,
+    // Portfolio-level aggregate Greeks at signal time
+    pub portfolio_delta: f64,
+    pub portfolio_gamma: f64,
 }
 
 pub struct LatencyRecord {

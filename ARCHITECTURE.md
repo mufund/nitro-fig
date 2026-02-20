@@ -107,7 +107,7 @@ src/
 ├── engine/
 │   ├── mod.rs
 │   ├── state.rs                   # BinanceState (persistent) + MarketState (per-market)
-│   ├── risk.rs                    # Two-tier risk: per-strategy + portfolio-level
+│   ├── risk.rs                    # Two-tier risk: per-strategy + portfolio-level + Greeks tracking
 │   ├── runner.rs                  # Core event loop + LiveSink + diagnostics
 │   └── pipeline.rs                # Shared signal pipeline (deconfliction, sorting, risk, coherence)
 ├── strategies/
@@ -123,7 +123,7 @@ src/
 ├── math/
 │   ├── mod.rs
 │   ├── normal.rs                  # phi(x), Phi(x) — standard normal PDF/CDF
-│   ├── pricing.rs                 # d2, p_fair, z_score, delta, gamma, vega, implied_vol
+│   ├── pricing.rs                 # d2, p_fair, z_score, delta_bin, gamma_bin, vega_bin, implied_vol
 │   ├── ewma.rs                    # SampledEwmaVol (1s) + legacy EwmaVol (per-tick)
 │   ├── oracle.rs                  # OracleBasis: S_est = S + beta, tau_eff = tau + delta
 │   ├── vwap.rs                    # Rolling VWAP with O(1) amortized updates
@@ -202,7 +202,7 @@ open_strategies:     [strike_misalign]
 
 **Settlement**: At market end, determines outcome from final `distance()`, iterates over all fills, computes realized PnL per fill and per strategy.
 
-**Diagnostics**: Every 10 seconds, logs `[DIAG]` block showing z-score, regime, distance, and per-strategy gate analysis.
+**Diagnostics**: Every 10 seconds, logs `[DIAG]` block showing z-score, regime, distance, portfolio Greeks (`port_Δ`, `port_Γ`, `n_pos`), and per-strategy gate analysis.
 
 ## Risk Management
 
@@ -226,10 +226,14 @@ open_strategies:     [strike_misalign]
 | Daily loss halt | -3% of bankroll | `DAILY_LOSS_HALT` |
 | Weekly loss halt | -8% of bankroll | `WEEKLY_LOSS_HALT` |
 | Stale feed rejection | 1s threshold | — |
+| Portfolio delta limit | 0.0 (disabled) | `MAX_PORTFOLIO_DELTA` |
+| Portfolio neg. gamma limit | 0.0 (disabled) | `MAX_PORTFOLIO_GAMMA_NEG` |
 
 **Sizing flow**: `Signal.size_frac * bankroll` → capped by per-trade limit → capped by strategy room → capped by portfolio room → minimum $1.
 
 **PnL accounting**: Fills are tracked in `Vec<Fill>` during the market. At settlement, `settle_market(outcome, fills)` computes correct binary PnL and updates daily/weekly counters. Per-market exposure resets to zero.
+
+**Portfolio Greeks** (`GreeksTracker`): Tracks aggregate delta and gamma across all fills within a market. On each fill, the tracker records the side and size. On each Binance trade (when positions exist), it recomputes aggregate Greeks using `delta_bin(S, K, sigma, tau)` and `gamma_bin(S, K, sigma, tau)`. Since all fills in a market share the same (S, K, sigma, tau), the unit Greeks are computed once and scaled by `sign * size` per fill (UP=+1, DOWN=-1). Optional risk gates block new orders when `|delta| > max_portfolio_delta` or `gamma < -max_portfolio_gamma_neg` (both disabled by default at 0.0). The snapshot is passed to telemetry for `signals.csv` columns (`sig_delta`, `sig_gamma`, `port_delta`, `port_gamma`) and appears in `[DIAG]` output.
 
 ## Order Gateway
 

@@ -171,6 +171,8 @@ pub fn replay_config() -> Config {
         oracle_delta_s: 2.0,
         ewma_lambda: 0.94,
         sigma_floor_annual: 0.30,
+        max_portfolio_delta: 0.0,
+        max_portfolio_gamma_neg: 0.0,
         strategy_latency_arb: true,
         strategy_certainty_capture: true,
         strategy_convexity_fade: true,
