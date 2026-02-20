@@ -106,6 +106,9 @@ pub struct Signal {
     pub confidence: f64,
     pub size_frac: f64,
     pub is_passive: bool,
+    /// If true, post at best bid instead of crossing at ask (GTD post_only).
+    /// Used by convexity_fade and strike_misalign.
+    pub use_bid: bool,
 }
 
 // ─── Settlement ───
@@ -128,6 +131,8 @@ pub enum OrderType {
     GTC,
     /// Fill-Or-Kill: must fill immediately and completely, or is cancelled.
     FOK,
+    /// Good-Till-Date: rests on the book until filled, cancelled, or expiration.
+    GTD,
 }
 
 #[derive(Clone)]
@@ -140,10 +145,12 @@ pub struct Order {
     pub signal_edge: f64,
     pub is_passive: bool,
     pub created_at: Instant,
-    /// CLOB order type: GTC for passive limit, FOK for aggressive taker.
+    /// CLOB order type: GTC for passive limit, FOK for aggressive taker, GTD for time-limited.
     pub order_type: OrderType,
-    /// Post-only: reject if order would cross the spread. Only valid with GTC.
+    /// Post-only: reject if order would cross the spread. Valid with GTC and GTD.
     pub post_only: bool,
+    /// GTD expiration timestamp in milliseconds (UTC). Only set for GTD orders.
+    pub expiration_ms: Option<i64>,
     /// CLOB token ID for the outcome being bought.
     pub token_id: String,
 }

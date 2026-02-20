@@ -108,6 +108,7 @@ impl Strategy for LatencyArb {
             confidence,
             size_frac: kelly(effective_edge, effective_price),
             is_passive: false,
+            use_bid: false,
         })
     }
 }

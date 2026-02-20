@@ -201,6 +201,7 @@ mod tests {
             confidence: 0.5,
             size_frac: 0.01,
             is_passive: false,
+            use_bid: false,
         }];
         evaluate_filtered(&strategies, &state, now, &mut buf);
         assert!(buf.is_empty(), "Buffer should be cleared even with no strategies");

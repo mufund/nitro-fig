@@ -407,8 +407,8 @@ impl MarketState {
     }
 
     pub fn is_stale(&self, now_ms: i64) -> bool {
-        (self.bn.binance_ts > 0 && now_ms - self.bn.binance_ts > 5000)
-            || (self.pm_last_ts > 0 && now_ms - self.pm_last_ts > 5000)
+        (self.bn.binance_ts > 0 && now_ms - self.bn.binance_ts > 1000)
+            || (self.pm_last_ts > 0 && now_ms - self.pm_last_ts > 1000)
     }
 
     pub fn has_data(&self) -> bool {

@@ -218,6 +218,7 @@ mod tests {
             confidence,
             size_frac: 0.02,
             is_passive: false,
+            use_bid: false,
         }
     }
 
@@ -236,6 +237,7 @@ mod tests {
             confidence: 0.5,
             size_frac: 0.02,
             is_passive: true,
+            use_bid: false,
         }
     }
 

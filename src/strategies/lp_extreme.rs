@@ -155,6 +155,7 @@ impl Strategy for LpExtreme {
             confidence,
             size_frac,
             is_passive: true, // passive limit orders
+            use_bid: false,
         })
     }
 }

@@ -75,6 +75,7 @@ impl Strategy for CertaintyCapture {
             confidence,
             size_frac: kelly(edge, market_ask),
             is_passive: false,
+            use_bid: false,
         })
     }
 }

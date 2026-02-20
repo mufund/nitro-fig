@@ -80,20 +80,31 @@ impl Strategy for ConvexityFade {
         let edge_up = fair_up - state.up_ask;
         let edge_down = (1.0 - fair_up) - state.down_ask;
 
-        let (side, edge, fair, market_ask) = if state.up_ask > 0.0
+        // Choose side based on ask-edge (which side is mispriced), then post at bid
+        let (side, fair, market_bid) = if state.up_ask > 0.0
             && state.up_ask < 1.0
             && edge_up > edge_down
             && edge_up > MIN_EDGE
         {
-            (Side::Up, edge_up, fair_up, state.up_ask)
+            // UP is mispriced — post at best bid
+            if state.up_bid <= 0.0 || state.up_bid >= 1.0 { return None; }
+            (Side::Up, fair_up, state.up_bid)
         } else if state.down_ask > 0.0
             && state.down_ask < 1.0
             && edge_down > MIN_EDGE
         {
-            (Side::Down, edge_down, 1.0 - fair_up, state.down_ask)
+            // DOWN is mispriced — post at best bid
+            if state.down_bid <= 0.0 || state.down_bid >= 1.0 { return None; }
+            (Side::Down, 1.0 - fair_up, state.down_bid)
         } else {
             return None;
         };
+
+        // Recompute edge against bid price (larger than ask-edge since bid < ask)
+        let edge = fair - market_bid;
+        if edge < MIN_EDGE {
+            return None;
+        }
 
         // ── Orderbook depth gates ──
         let book = match side {
@@ -129,10 +140,11 @@ impl Strategy for ConvexityFade {
             side,
             edge,
             fair_value: fair,
-            market_price: market_ask,
+            market_price: market_bid,
             confidence,
-            size_frac: kelly(edge, market_ask),
+            size_frac: kelly(edge, market_bid),
             is_passive: false,
+            use_bid: true,
         })
     }
 }

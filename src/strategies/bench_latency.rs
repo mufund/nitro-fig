@@ -243,6 +243,7 @@ fn test_latency_risk_check() {
         confidence: 0.8,
         size_frac: 0.02,
         is_passive: false,
+        use_bid: false,
     };
 
     // Warmup

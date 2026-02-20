@@ -74,13 +74,14 @@ impl Strategy for StrikeMisalign {
 
         // dp > 0 means UP is underpriced (K was set too high, S_ref < K)
         // dp < 0 means DOWN is underpriced (K was set too low, S_ref > K)
-        let (side, market_ask) = if dp > 0.0 {
-            (Side::Up, state.up_ask)
+        // Post at best bid (passive GTD) instead of crossing at ask
+        let (side, market_bid) = if dp > 0.0 {
+            (Side::Up, state.up_bid)
         } else {
-            (Side::Down, state.down_ask)
+            (Side::Down, state.down_bid)
         };
 
-        if market_ask <= 0.0 || market_ask >= 1.0 {
+        if market_bid <= 0.0 || market_bid >= 1.0 {
             return None;
         }
 
@@ -91,7 +92,7 @@ impl Strategy for StrikeMisalign {
             1.0 - crate::math::pricing::p_fair(s_ref, k, sigma, tau)
         };
 
-        let edge = fair - market_ask;
+        let edge = fair - market_bid;
         if edge < MIN_EDGE {
             return None;
         }
@@ -103,10 +104,11 @@ impl Strategy for StrikeMisalign {
             side,
             edge,
             fair_value: fair,
-            market_price: market_ask,
+            market_price: market_bid,
             confidence,
-            size_frac: kelly(edge, market_ask),
+            size_frac: kelly(edge, market_bid),
             is_passive: false,
+            use_bid: true,
         })
     }
 }

@@ -240,6 +240,7 @@ pub async fn order_gateway(
             let clob_order_type = match order.order_type {
                 OrderType::GTC => ClobOrderType::GTC,
                 OrderType::FOK => ClobOrderType::FOK,
+                OrderType::GTD => ClobOrderType::GTD,
             };
 
             // Record raw request for replay
@@ -252,6 +253,7 @@ pub async fn order_gateway(
                 "size_usdc": order.size,
                 "order_type": format!("{:?}", order.order_type),
                 "post_only": order.post_only,
+                "expiration_ms": order.expiration_ms,
                 "strategy": order.strategy,
             })
             .to_string();
@@ -265,14 +267,24 @@ pub async fn order_gateway(
 
             // Build → Sign → Post
             let result: Result<_, String> = async {
-                let signable = client
+                let mut builder = client
                     .limit_order()
                     .token_id(token_id)
                     .price(price_dec)
                     .size(size_dec)
                     .side(ClobSide::Buy)
                     .order_type(clob_order_type)
-                    .post_only(order.post_only)
+                    .post_only(order.post_only);
+
+                // GTD orders require an expiration timestamp
+                if let Some(exp_ms) = order.expiration_ms {
+                    use chrono::{DateTime, Utc};
+                    let exp_dt = DateTime::from_timestamp_millis(exp_ms)
+                        .unwrap_or_else(|| Utc::now() + chrono::Duration::seconds(10));
+                    builder = builder.expiration(exp_dt);
+                }
+
+                let signable = builder
                     .build()
                     .await
                     .map_err(|e| format!("build: {}", e))?;

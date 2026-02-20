@@ -199,6 +199,21 @@ impl StrategyRiskManager {
             return None;
         }
 
+        // Determine order type and execution parameters:
+        // - lp_extreme (is_passive): GTC post_only (unchanged)
+        // - convexity_fade, strike_misalign (use_bid): GTD at bid, post_only, 10s TTL
+        // - latency_arb: FOK (latency race, needs instant fill-or-kill)
+        // - certainty_capture, cross_timeframe (others): GTD at ask, 10s TTL
+        let (order_type, post_only, expiration_ms) = if signal.is_passive {
+            (OrderType::GTC, true, None)
+        } else if signal.use_bid {
+            (OrderType::GTD, true, Some(now_ms + 10_000))
+        } else if signal.strategy == "latency_arb" {
+            (OrderType::FOK, false, None)
+        } else {
+            (OrderType::GTD, false, Some(now_ms + 10_000))
+        };
+
         Some(Order {
             id: order_id,
             side: signal.side,
@@ -208,8 +223,9 @@ impl StrategyRiskManager {
             signal_edge: signal.edge,
             is_passive: signal.is_passive,
             created_at: Instant::now(),
-            order_type: if signal.is_passive { OrderType::GTC } else { OrderType::FOK },
-            post_only: signal.is_passive,
+            order_type,
+            post_only,
+            expiration_ms,
             token_id: String::new(), // set by LiveSink::on_order from MarketInfo
         })
     }
@@ -272,6 +288,7 @@ mod tests {
             confidence: 0.8,
             size_frac,
             is_passive: false,
+            use_bid: false,
         }
     }
 
@@ -308,12 +325,14 @@ mod tests {
     fn test_halt_expires() {
         let config = make_config();
         let mut risk = StrategyRiskManager::new(&config);
-        let (state, now) = make_state(95_000.0, 95_500.0, 0.001, 120.0, 0.50, 0.50);
+        let (mut state, now) = make_state(95_000.0, 95_500.0, 0.001, 120.0, 0.50, 0.50);
         risk.trigger_halt(now, 1000);
         let signal = make_signal("latency_arb", 0.05, 0.50, 0.01);
         // Still halted at now + 500
         assert!(risk.check_strategy(&signal, &state, 1, now + 500).is_none());
-        // Halt expired at now + 2000
+        // Halt expired at now + 2000 — update feed timestamps so they're not stale
+        state.bn.binance_ts = now + 2000;
+        state.pm_last_ts = now + 2000;
         assert!(risk.check_strategy(&signal, &state, 2, now + 2000).is_some());
     }
 
@@ -343,14 +362,14 @@ mod tests {
         assert!(risk.check_strategy(&signal, &state, 1, now).is_none());
     }
 
-    /// Scenario: Binance timestamp set to 6s behind now (>5s staleness threshold).
+    /// Scenario: Binance timestamp set to 6s behind now (>1s staleness threshold).
     /// Expected: Order rejected by the stale feed kill switch (gate 4).
     #[test]
     fn test_stale_feed_blocks() {
         let config = make_config();
         let risk = StrategyRiskManager::new(&config);
         let (mut state, now) = make_state(95_000.0, 95_500.0, 0.001, 120.0, 0.50, 0.50);
-        // Make binance data stale (> 5000ms old)
+        // Make binance data stale (> 1000ms old)
         state.bn.binance_ts = now - 6000;
         let signal = make_signal("latency_arb", 0.05, 0.50, 0.01);
         assert!(risk.check_strategy(&signal, &state, 1, now).is_none());
