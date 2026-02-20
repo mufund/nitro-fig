@@ -169,18 +169,22 @@ STRAT_CONVEXITY_FADE=false STRAT_LATENCY_ARB=0 ./target/release/bot
 
 ## Order Types
 
-All orders are limit orders submitted via the SDK's `limit_order()` builder. The `is_passive` flag on each signal determines execution style:
+All orders are limit orders submitted via the SDK's `limit_order()` builder. Order type is determined by the signal's `is_passive` and `use_bid` flags:
 
-| Strategy | `is_passive` | Order Type | Behavior |
-|----------|-------------|------------|----------|
-| latency_arb | `false` | FOK (Fill-or-Kill) | Aggressive taker -- crosses the spread, fills immediately or cancels |
-| certainty_capture | `false` | FOK | Aggressive taker |
-| convexity_fade | `false` | FOK | Aggressive taker |
-| strike_misalign | `false` | FOK | Aggressive taker |
-| lp_extreme | `true` | GTC + post_only | Passive maker -- rests on the book, earns maker rebate |
-| cross_timeframe | `false` | FOK | Aggressive taker (disabled) |
+| Strategy | Order Type | Behavior |
+|----------|------------|----------|
+| latency_arb | FOK (Fill-or-Kill) | Aggressive taker -- crosses the spread, fills immediately or cancels |
+| certainty_capture | GTD (10s TTL) | Aggressive taker at best ask with 10-second expiration |
+| convexity_fade | GTD + post_only (10s TTL) | Posts at best bid, rests on book for up to 10 seconds |
+| strike_misalign | GTD + post_only (10s TTL) | Posts at best bid, rests on book for up to 10 seconds |
+| lp_extreme | GTC + post_only | Passive maker -- rests on the book, earns maker rebate |
+| cross_timeframe | GTD (10s TTL) | Aggressive taker at best ask (disabled) |
 
-Polymarket has no native market order type. FOK limit orders at the best ask price behave like market orders (immediate fill or cancel). GTC + post_only orders rest on the book and reject if they would cross the spread.
+**Order type routing** (set in `risk.rs`):
+- `is_passive` → GTC + post_only (lp_extreme: rests indefinitely)
+- `use_bid` → GTD + post_only, 10s TTL (convexity_fade, strike_misalign: posts at best bid)
+- `latency_arb` → FOK (latency race, needs instant fill-or-kill)
+- All others → GTD, 10s TTL (certainty_capture, cross_timeframe: aggressive at ask with expiration)
 
 ## Test Coverage
 

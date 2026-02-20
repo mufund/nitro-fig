@@ -33,7 +33,7 @@ Each market is a time window (5m, 15m, 1h, or 4h): will BTC be **above** (Up) or
 **File**: `strategies/latency_arb.rs`
 **Trigger**: Every Binance trade
 **Type**: Active (sets house view)
-**Order type**: FOK (aggressive taker -- crosses the spread)
+**Order type**: FOK (aggressive taker -- crosses the spread, instant fill-or-kill)
 
 ### Concept
 
@@ -87,7 +87,7 @@ The minimum edge of 3 cents accounts for Polymarket's fee structure. Below this 
 **File**: `strategies/certainty_capture.rs`
 **Trigger**: Every Polymarket quote
 **Type**: Active (sets house view)
-**Order type**: FOK (aggressive taker)
+**Order type**: GTD at best ask (10s TTL -- aggressive taker with expiration)
 
 ### Concept
 
@@ -143,7 +143,7 @@ The z-score intentionally omits the drift term (`-sigma^2*tau/2`) that appears i
 **File**: `strategies/convexity_fade.rs`
 **Trigger**: Every Polymarket quote
 **Type**: Active (sets house view)
-**Order type**: FOK (aggressive taker)
+**Order type**: GTD + post_only at best bid (10s TTL -- posts passively on the book)
 
 ### Concept
 
@@ -177,14 +177,17 @@ This is enormous. In equity options, a similar ATM gamma causes "pin risk." In b
 
 3. **Minimum tau**: tau >= 30 seconds. Below this, certainty_capture should be handling the trade (near-expiry is a different regime).
 
-4. **Compute fair value and edges for both sides**:
+4. **Compute fair value and edges for both sides** (edges checked against asks to identify mispricing):
    ```
    fair_up = P_fair(S, K, sigma, tau)
    edge_up = fair_up - up_ask
    edge_down = (1 - fair_up) - down_ask
    ```
 
-5. **Select better side**: Whichever side has higher edge (must be >= 2 cents).
+5. **Select better side and post at bid**: Whichever side has higher ask-edge (must be >= 2 cents). Then post at the best bid for that side:
+   ```
+   edge = fair - market_bid    (bid < ask, so edge is larger but fill rate is lower)
+   ```
 
 6. **Confidence**: Dynamic, based on edge relative to expected probability swing:
    ```
@@ -238,7 +241,7 @@ This represents how much the binary price should bounce in the next `dt` seconds
 **File**: `strategies/strike_misalign.rs`
 **Trigger**: Binance trade (only in opening window: ~5% of market duration)
 **Type**: Active (sets house view)
-**Order type**: FOK (aggressive taker)
+**Order type**: GTD + post_only at best bid (10s TTL -- posts passively on the book)
 
 ### Concept
 
@@ -274,7 +277,7 @@ The strike K is set from the Binance kline candle open at market start. While mo
    fair = P_fair(VWAP, K, sigma, tau)  // or 1 - P_fair for Down
    ```
 
-8. **Edge and sizing**: `edge = fair - market_ask`, minimum 2 cents. Half-Kelly capped at 2%.
+8. **Edge and sizing**: `edge = fair - market_bid` (posts at best bid), minimum 2 cents. Half-Kelly capped at 2%.
 
 ### Why VWAP?
 

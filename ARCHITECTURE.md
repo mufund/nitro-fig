@@ -194,7 +194,7 @@ open_strategies:     [strike_misalign]
 - `BinanceTrade` → evaluates `binance_strategies` + `open_strategies` if in opening window
 - `PolymarketQuote` / `PolymarketBook` → evaluates `pm_strategies` + `open_strategies` if in opening window
 - `OrderAck` → records fill, updates position
-- `Tick` → stale data detection (5s threshold)
+- `Tick` → stale data detection (1s threshold)
 
 **Shared signal pipeline** (`engine/pipeline.rs`): Both the live engine and the backtester process signals through the same `process_signals()` function. This guarantees identical behavior: house-side filtering, deconfliction (scoring conflicting sides by `sum(edge * confidence)`), sorting by score, risk checking, and house-side setting. Engine-specific behavior (async channel dispatch for live, Vec pushes for backtest) is abstracted via the `SignalSink` trait. The live engine implements `LiveSink`, the backtester implements `BacktestSink`.
 
@@ -225,7 +225,7 @@ open_strategies:     [strike_misalign]
 | Max total exposure | 15% of bankroll | `MAX_EXPOSURE_FRAC` |
 | Daily loss halt | -3% of bankroll | `DAILY_LOSS_HALT` |
 | Weekly loss halt | -8% of bankroll | `WEEKLY_LOSS_HALT` |
-| Stale feed rejection | 5s threshold | — |
+| Stale feed rejection | 1s threshold | — |
 
 **Sizing flow**: `Signal.size_frac * bankroll` → capped by per-trade limit → capped by strategy room → capped by portfolio room → minimum $1.
 
@@ -254,8 +254,10 @@ open_strategies:     [strike_misalign]
 5. Deduct spent USDC from local balance tracker on successful fills
 
 **Order type mapping** (set in `risk.rs`):
-- `signal.is_passive == false` → `OrderType::FOK` (aggressive taker, crosses spread)
-- `signal.is_passive == true` → `OrderType::GTC` + `post_only: true` (passive maker, rests on book)
+- `signal.is_passive == true` → `OrderType::GTC` + `post_only: true` (passive maker, rests on book — lp_extreme)
+- `signal.use_bid == true` → `OrderType::GTD` + `post_only: true`, 10s TTL (posts at best bid — convexity_fade, strike_misalign)
+- `signal.strategy == "latency_arb"` → `OrderType::FOK` (aggressive taker, instant fill-or-kill)
+- All others → `OrderType::GTD`, 10s TTL (aggressive at ask with expiration — certainty_capture, cross_timeframe)
 
 ## Realized Volatility Model
 

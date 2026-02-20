@@ -280,7 +280,7 @@ BTC is genuinely trending (75%+ of direction-changing ticks going one way in the
 Both up_ask and down_ask at 0.990 means Polymarket's WebSocket is not delivering real quotes. This can happen when:
 - The Polymarket CLOB WS connection dropped silently
 - The market has no liquidity yet (just opened)
-- The 5s stale feed gate in risk.rs will block all new orders
+- The 1s stale feed gate in risk.rs will block all new orders
 
 Check with: `grep 'WARN.*Stale' /root/nitro-fig/logs/latest.log`
 
@@ -363,7 +363,7 @@ Current per-strategy limits from `risk.rs` (based on $1000 bankroll):
 - Max total exposure: 15% of bankroll = $150
 - Daily loss halt: -3% of bankroll = -$30
 - Weekly loss halt: -8% of bankroll = -$80
-- Stale feed rejection: 5s threshold (either Binance or Polymarket)
+- Stale feed rejection: 1s threshold (either Binance or Polymarket)
 
 **Sizing flow**: `signal.size_frac * bankroll` -> capped by per-trade limit -> capped by strategy room (total cap - current exposure) -> capped by portfolio room ($150 - total exposure) -> minimum $1.
 
